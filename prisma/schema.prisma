@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  userId      Int      @id @default(autoincrement())
+  cmuAccount  String   @unique
+  firstName   String
+  lastName    String
+  pswHash     String?
+  phoneNum    String?
+  roleName    String
+  gender      String?
+  createdAt   DateTime @default(now())
+  
+  studentProfile   Student?
+  counselorProfile Counselor?
+  adminProfile     Admin?
+}
+
+model Student {
+  userId      Int     @id
+  user        User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  studentId   String  @unique
+  major       String?
+  department  String?
+  cases       Case[]
+}
+
+model Counselor {
+  userId          Int     @id 
+  user            User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  counselorNumber String?
+  cases           Case[]
+  sessions        Session[]
+}
+
+model Admin {
+  userId      Int     @id 
+  user        User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  adminNumber String?
+}
+
+model Case {
+  caseId        Int      @id @default(autoincrement())
+  topic         String?
+  status        String   @default("pending")
+  createdAt     DateTime @default(now())
+  studentId     String
+  student       Student  @relation(fields: [studentId], references: [studentId])
+  counselorId   Int?
+  counselor     Counselor? @relation(fields: [counselorId], references: [userId])
+  sessions      Session[]
+}
+
+model Session {
+  sessionId     Int      @id @default(autoincrement())
+  sessionName   String?
+  timeStart     DateTime
+  timeEnd       DateTime
+  location      String?
+  status        String   @default("available")
+  createdAt     DateTime @default(now())
+  caseId        Int?
+  case          Case?    @relation(fields: [caseId], references: [caseId])
+  counselorId   Int?
+  counselor     Counselor? @relation(fields: [counselorId], references: [userId])
+}
