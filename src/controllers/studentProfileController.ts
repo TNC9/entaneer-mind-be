@@ -1,19 +1,28 @@
 import { Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-
-const prisma = new PrismaClient();
 
 // Get Student Profile (for student profile page)
 export const getStudentProfile = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    const studentId = req.user?.studentId;
 
-    if (!userId || !studentId) {
+    if (!userId) {
       return res.status(401).json({ 
         success: false,
-        message: 'User not authenticated or not a student' 
+        message: 'User not authenticated' 
+      });
+    }
+
+    // Get student from userId
+    const student = await prisma.student.findUnique({
+      where: { userId }
+    });
+
+    if (!student) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Student not found' 
       });
     }
 
@@ -63,13 +72,24 @@ export const getStudentProfile = async (req: AuthRequest, res: Response) => {
 export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    const studentId = req.user?.studentId;
     const { name, phone, department } = req.body;
 
-    if (!userId || !studentId) {
+    if (!userId) {
       return res.status(401).json({ 
         success: false,
-        message: 'User not authenticated or not a student' 
+        message: 'User not authenticated' 
+      });
+    }
+
+    // Get student from userId
+    const student = await prisma.student.findUnique({
+      where: { userId }
+    });
+
+    if (!student) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Student not found' 
       });
     }
 
@@ -93,7 +113,7 @@ export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
 
     // Update student profile
     const updatedStudent = await prisma.student.update({
-      where: { studentId },
+      where: { studentId: student.studentId },
       data: {
         department
       }
