@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../prisma';
-import { AuthRequest } from '../middleware/authMiddleware';
+import { AuthRequest, requireStudent } from '../middleware/authMiddleware';
 
 // Search available slots
 export const searchSlots = async (req: Request, res: Response) => {
@@ -86,24 +86,12 @@ export const searchSlots = async (req: Request, res: Response) => {
 export const bookSlot = async (req: AuthRequest, res: Response) => {
   try {
     const { sessionId, description, date } = req.body;
-    const userId = req.user?.userId;
+    const student = req.student; // Pre-populated by middleware
 
-    if (!sessionId || !userId) {
+    if (!sessionId || !student) {
       return res.status(400).json({
         success: false,
-        message: 'Session ID and user authentication required'
-      });
-    }
-
-    // Get student information from userId
-    const student = await prisma.student.findUnique({
-      where: { userId }
-    });
-
-    if (!student) {
-      return res.status(404).json({
-        success: false,
-        message: 'Student not found'
+        message: 'Session ID and student authentication required'
       });
     }
 
@@ -216,24 +204,12 @@ export const bookSlot = async (req: AuthRequest, res: Response) => {
 // Get student booking history
 export const getStudentBookings = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.userId;
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'User not authenticated'
-      });
-    }
-
-    // Get student from userId
-    const student = await prisma.student.findUnique({
-      where: { userId }
-    });
+    const student = req.student; // Pre-populated by middleware
 
     if (!student) {
-      return res.status(404).json({
+      return res.status(401).json({
         success: false,
-        message: 'Student not found'
+        message: 'Student not authenticated'
       });
     }
 
@@ -328,24 +304,12 @@ export const getStudentBookings = async (req: AuthRequest, res: Response) => {
 export const cancelBooking = async (req: AuthRequest, res: Response) => {
   try {
     const { sessionId } = req.body;
-    const userId = req.user?.userId;
+    const student = req.student; // Pre-populated by middleware
 
-    if (!sessionId || !userId) {
+    if (!sessionId || !student) {
       return res.status(400).json({
         success: false,
-        message: 'Session ID and user authentication required'
-      });
-    }
-
-    // Get student from userId
-    const student = await prisma.student.findUnique({
-      where: { userId }
-    });
-
-    if (!student) {
-      return res.status(404).json({
-        success: false,
-        message: 'Student not found'
+        message: 'Session ID and student authentication required'
       });
     }
 

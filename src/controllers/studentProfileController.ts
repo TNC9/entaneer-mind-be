@@ -1,33 +1,21 @@
 import { Response } from 'express';
 import { prisma } from '../prisma';
-import { AuthRequest } from '../middleware/authMiddleware';
+import { AuthRequest, requireStudent } from '../middleware/authMiddleware';
 
 // Get Student Profile (for student profile page)
 export const getStudentProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.userId;
-
-    if (!userId) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'User not authenticated' 
-      });
-    }
-
-    // Get student from userId
-    const student = await prisma.student.findUnique({
-      where: { userId }
-    });
+    const student = req.student; // Pre-populated by middleware
 
     if (!student) {
-      return res.status(404).json({ 
+      return res.status(401).json({ 
         success: false,
-        message: 'Student not found' 
+        message: 'Student not authenticated' 
       });
     }
 
     const user = await prisma.user.findUnique({
-      where: { userId },
+      where: { userId: req.user!.userId },
       include: {
         studentProfile: true
       }
@@ -71,25 +59,13 @@ export const getStudentProfile = async (req: AuthRequest, res: Response) => {
 // Update Student Profile
 export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.userId;
+    const student = req.student; // Pre-populated by middleware
     const { name, phone, department } = req.body;
 
-    if (!userId) {
+    if (!student) {
       return res.status(401).json({ 
         success: false,
-        message: 'User not authenticated' 
-      });
-    }
-
-    // Get student from userId
-    const student = await prisma.student.findUnique({
-      where: { userId }
-    });
-
-    if (!student) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'Student not found' 
+        message: 'Student not authenticated' 
       });
     }
 
@@ -100,7 +76,7 @@ export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
 
     // Update user information
     const updatedUser = await prisma.user.update({
-      where: { userId },
+      where: { userId: req.user!.userId },
       data: {
         firstName,
         lastName,

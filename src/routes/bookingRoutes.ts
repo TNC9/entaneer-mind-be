@@ -1,19 +1,16 @@
 import { Router } from 'express';
 import { searchSlots, bookSlot, getStudentBookings, cancelBooking } from '../controllers/bookingController';
-import { authenticateToken } from '../middleware/authMiddleware';
+import { authenticateToken, requireStudent } from '../middleware/authMiddleware';
+import { validateBookingRequest, validateCancellationRequest, validateDateQuery } from '../middleware/validationMiddleware';
 
 const router = Router();
 
-// GET /api/slots - Search available slots
-router.get('/slots', searchSlots);
+// Public routes (no authentication required)
+router.get('/slots', validateDateQuery, searchSlots);
 
-// POST /api/bookings - Book a slot
-router.post('/bookings', authenticateToken, bookSlot);
-
-// GET /api/student/bookings - Get student booking history
-router.get('/student/bookings', authenticateToken, getStudentBookings);
-
-// POST /api/bookings/cancel - Cancel booking (additional endpoint for cancellation)
-router.post('/bookings/cancel', authenticateToken, cancelBooking);
+// Student-only routes
+router.post('/bookings', authenticateToken, requireStudent, validateBookingRequest, bookSlot);
+router.get('/student/bookings', authenticateToken, requireStudent, getStudentBookings);
+router.post('/bookings/cancel', authenticateToken, requireStudent, validateCancellationRequest, cancelBooking);
 
 export default router;
