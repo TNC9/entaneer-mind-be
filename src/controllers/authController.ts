@@ -156,8 +156,8 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
       { expiresIn: '7d' }
     );
 
-    // E. Redirect กลับไปหน้าเว็บ Frontend
-    res.redirect(`http://localhost:5173/login?token=${appToken}`);
+    // E. ส่ง User กลับไปหน้าเว็บ Frontend พร้อม Token
+    res.redirect(`http://localhost:3001/login-success?token=${appToken}`);
 
   } catch (error) {
     console.error('CMU Login Error:', error);
