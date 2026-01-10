@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import authRoutes from "./routes/authRoutes";
+import userRoutes from './routes/userRoutes';
 import { cmuCallback } from "./controllers/authController";
 
 dotenv.config();
@@ -12,8 +13,9 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// 2. ใช้งาน Route ที่เราเพิ่งสร้าง
+// Routes
 app.use("/api/auth", authRoutes);
+app.use('/api/users', userRoutes);
 
 app.get("/cmuEntraIDCallback", cmuCallback);
 

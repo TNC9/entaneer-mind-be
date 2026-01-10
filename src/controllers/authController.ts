@@ -114,10 +114,13 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
     const cmuData = userResponse.data; 
     const email = cmuData.mail || cmuData.userPrincipalName;
 
-    // C. Upsert ลง Database
-    let user = await prisma.user.findUnique({ where: { cmuAccount: email } });
+    let user = await prisma.user.findUnique({ 
+        where: { cmuAccount: email },
+        include: { studentProfile: true } // check ว่ามี profile หรือยัง
+    });
 
     if (!user) {
+      // 1. สร้าง User หลักก่อน
       user = await prisma.user.create({
         data: {
           cmuAccount: email,
@@ -125,7 +128,25 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
           lastName: cmuData.surname || 'Unknown',
           roleName: 'student', 
         },
+        include: { studentProfile: true } // create แล้ว return profile มาด้วย
       });
+    }
+
+    // 🔥 [เพิ่มตรงนี้] 2. ถ้าเป็น Student แต่ยังไม่มี Profile ในตาราง Student ให้สร้างเพิ่ม
+    if (user.roleName === 'student' && !user.studentProfile) {
+        // ดึง Student ID จาก email (เดาจาก format: firstname_surname@cmu.ac.th)
+        // หรือถ้าใน CMU Data มี studentId ก็ใช้ได้เลย
+        // เบื้องต้นใช้ email prefix ไปก่อน หรือสุ่มเลขถ้าหาไม่เจอ
+        const studentIdFromEmail = email.split('@')[0]; 
+
+        await prisma.student.create({
+            data: {
+                userId: user.userId, // ผูกกับ User ID ที่เพิ่งสร้าง
+                studentId: studentIdFromEmail, // หรือใช้ cmuData.studentId ถ้ามี
+                major: 'General',      // ใส่ค่า default ไปก่อน
+                department: 'Engineering' 
+            }
+        });
     }
 
     // D. สร้าง Token ของเราเอง
