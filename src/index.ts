@@ -3,6 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import authRoutes from "./routes/authRoutes";
 import userRoutes from './routes/userRoutes';
+import bookingRoutes from './routes/bookingRoutes';
+import studentProfileRoutes from './routes/studentProfileRoutes';
 import { cmuCallback } from "./controllers/authController";
 
 dotenv.config();
@@ -16,6 +18,8 @@ app.use(express.json());
 // Routes
 app.use("/api/auth", authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api', bookingRoutes);
+app.use('/api/student', studentProfileRoutes);
 
 app.get("/cmuEntraIDCallback", cmuCallback);
 
