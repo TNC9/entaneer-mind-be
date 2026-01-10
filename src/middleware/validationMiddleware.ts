@@ -4,34 +4,34 @@ import { Request, Response, NextFunction } from 'express';
 export const validateBookingRequest = (req: Request, res: Response, next: NextFunction) => {
   const { sessionId, description, date } = req.body;
 
-  // Validate sessionId
-  if (!sessionId || typeof sessionId !== 'number' || sessionId <= 0) {
+  // Validate and coerce sessionId (handle string numbers)
+  const sessionIdNum = Number(sessionId);
+  if (!Number.isInteger(sessionIdNum) || sessionIdNum <= 0) {
     return res.status(400).json({
       success: false,
       message: 'Valid session ID is required'
     });
   }
+  req.body.sessionId = sessionIdNum;
 
-  // Validate description (optional but if provided, must be string)
-  if (description && (typeof description !== 'string' || description.trim().length === 0)) {
+  // Validate description (REQUIRED for frontend compatibility)
+  if (!description || typeof description !== 'string' || description.trim().length === 0) {
     return res.status(400).json({
       success: false,
-      message: 'Description must be a non-empty string'
+      message: 'Description is required'
     });
   }
 
-  // Validate date (optional but if provided, must be valid date string)
-  if (date && (typeof date !== 'string' || isNaN(Date.parse(date)))) {
+  // Validate date (optional but if provided, must be strict YYYY-MM-DD format)
+  if (date && (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date))) {
     return res.status(400).json({
       success: false,
-      message: 'Date must be a valid date string'
+      message: 'Date must be in YYYY-MM-DD format'
     });
   }
 
-  // Trim description if provided
-  if (description) {
-    req.body.description = description.trim();
-  }
+  // Trim description
+  req.body.description = description.trim();
 
   next();
 };
@@ -76,12 +76,15 @@ export const validateProfileUpdate = (req: Request, res: Response, next: NextFun
 export const validateCancellationRequest = (req: Request, res: Response, next: NextFunction) => {
   const { sessionId } = req.body;
 
-  if (!sessionId || typeof sessionId !== 'number' || sessionId <= 0) {
+  // Validate and coerce sessionId (handle string numbers)
+  const sessionIdNum = Number(sessionId);
+  if (!Number.isInteger(sessionIdNum) || sessionIdNum <= 0) {
     return res.status(400).json({
       success: false,
       message: 'Valid session ID is required'
     });
   }
+  req.body.sessionId = sessionIdNum;
 
   next();
 };
@@ -90,10 +93,11 @@ export const validateCancellationRequest = (req: Request, res: Response, next: N
 export const validateDateQuery = (req: Request, res: Response, next: NextFunction) => {
   const { date } = req.query;
 
-  if (date && (typeof date !== 'string' || isNaN(Date.parse(date as string)))) {
+  // Enforce strict YYYY-MM-DD format
+  if (date && (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date))) {
     return res.status(400).json({
       success: false,
-      message: 'Date must be a valid date string (YYYY-MM-DD format)'
+      message: 'Date must be in YYYY-MM-DD format'
     });
   }
 
