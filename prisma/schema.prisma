@@ -60,6 +60,8 @@ model Case {
   caseId        Int      @id @default(autoincrement())
   topic         String?
   status        String   @default("waiting_confirmation")
+  priority      String   @default("medium")
+  refCode       String?
   createdAt     DateTime @default(now())
   studentId     String
   student       Student  @relation(fields: [studentId], references: [studentId])
@@ -87,5 +89,6 @@ model Session {
   counselorId   Int?
   counselor     Counselor? @relation(fields: [counselorId], references: [userId])
   counselorNote String?    @db.Text
-  tags          ProblemTag[]
+  moodScale     Int?
+  problemTags   ProblemTag[]
 }

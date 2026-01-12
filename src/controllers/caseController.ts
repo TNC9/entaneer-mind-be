@@ -35,7 +35,8 @@ export const verifyCodeAndCreateCase = async (req: AuthRequest, res: Response) =
             data: {
                 studentId: user.studentProfile!.studentId,
                 status: 'waiting_confirmation',
-                topic: 'New Registration' 
+                topic: 'New Registration',
+                refCode: code
             }
         });
 
