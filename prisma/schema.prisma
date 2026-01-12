@@ -17,10 +17,20 @@ model User {
   roleName    String
   gender      String?
   createdAt   DateTime @default(now())
+  isConsentAccepted Boolean  @default(false) 
+  consentAcceptedAt DateTime?
   
   studentProfile   Student?
   counselorProfile Counselor?
   adminProfile     Admin?
+}
+
+model RegistrationCode {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  isUsed    Boolean  @default(false)
+  usedBy    String?
+  usedAt    DateTime?
 }
 
 model Student {
@@ -49,13 +59,21 @@ model Admin {
 model Case {
   caseId        Int      @id @default(autoincrement())
   topic         String?
-  status        String   @default("pending")
+  status        String   @default("waiting_confirmation")
+  priority      String   @default("medium")
+  refCode       String?
   createdAt     DateTime @default(now())
   studentId     String
   student       Student  @relation(fields: [studentId], references: [studentId])
   counselorId   Int?
   counselor     Counselor? @relation(fields: [counselorId], references: [userId])
   sessions      Session[]
+}
+
+model ProblemTag {
+  id        Int      @id @default(autoincrement())
+  label     String   @unique
+  sessions  Session[]
 }
 
 model Session {
@@ -70,4 +88,7 @@ model Session {
   case          Case?    @relation(fields: [caseId], references: [caseId])
   counselorId   Int?
   counselor     Counselor? @relation(fields: [counselorId], references: [userId])
+  counselorNote String?    @db.Text
+  moodScale     Int?
+  problemTags   ProblemTag[]
 }
