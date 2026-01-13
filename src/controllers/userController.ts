@@ -82,7 +82,7 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     
     // ส่งข้อมูลที่แปลงแล้ว (safeUser) พร้อม flowStatus กลับไปให้ Frontend
     res.json({ 
-      user: safeUser, 
+      ...safeUser, 
       flowStatus 
     });
 
