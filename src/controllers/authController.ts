@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
 
-const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'secret-key-sud-yod';
 
 // ------------------------------------------
@@ -132,7 +131,7 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
       });
     }
 
-    // 🔥 [เพิ่มตรงนี้] 2. ถ้าเป็น Student แต่ยังไม่มี Profile ในตาราง Student ให้สร้างเพิ่ม
+    // 2. ถ้าเป็น Student แต่ยังไม่มี Profile ในตาราง Student ให้สร้างเพิ่ม
     if (user.roleName === 'student' && !user.studentProfile) {
         // ดึง Student ID จาก email (เดาจาก format: firstname_surname@cmu.ac.th)
         // หรือถ้าใน CMU Data มี studentId ก็ใช้ได้เลย

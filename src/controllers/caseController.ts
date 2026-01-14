@@ -1,8 +1,6 @@
 import { Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
-
-const prisma = new PrismaClient();
 
 // API: กรอก Code เพื่อเปิด Case ใหม่
 export const verifyCodeAndCreateCase = async (req: AuthRequest, res: Response) => {
