@@ -8,87 +8,120 @@ datasource db {
 }
 
 model User {
-  userId      Int      @id @default(autoincrement())
-  cmuAccount  String   @unique
-  firstName   String
-  lastName    String
-  pswHash     String?
-  phoneNum    String?
-  roleName    String
-  gender      String?
-  createdAt   DateTime @default(now())
-  isConsentAccepted Boolean  @default(false) 
+  userId            Int       @id @default(autoincrement())
+  cmuAccount        String    @unique
+  firstName         String
+  lastName          String
+  phoneNum          String?
+  roleName          String    // Sprint 2: เหลือแค่ 'client' กับ 'counselor'
+  gender            String?
+  createdAt         DateTime  @default(now())
+  isConsentAccepted Boolean   @default(false) 
   consentAcceptedAt DateTime?
   
-  studentProfile   Student?
-  counselorProfile Counselor?
-  adminProfile     Admin?
+  clientProfile    client?
+  counselorProfile  Counselor?
+  // ถอด Admin ออกแล้วตาม Requirement
 }
 
 model RegistrationCode {
-  id        Int      @id @default(autoincrement())
-  code      String   @unique
-  isUsed    Boolean  @default(false)
-  usedBy    String?
+  id        Int       @id @default(autoincrement())
+  code      String    @unique
+  isUsed    Boolean   @default(false)
+  createdBy String?
   usedAt    DateTime?
 }
 
-model Student {
+model client {
   userId      Int     @id
   user        User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
-  studentId   String  @unique
+  clientId   String  @unique
   major       String?
   department  String?
   cases       Case[]
 }
 
 model Counselor {
-  userId          Int     @id 
-  user            User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  userId          Int       @id 
+  user            User      @relation(fields: [userId], references: [userId], onDelete: Cascade)
   counselorNumber String?
   cases           Case[]
   sessions        Session[]
 }
 
-model Admin {
-  userId      Int     @id 
-  user        User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
-  adminNumber String?
-}
+// --------------------------------------------------
+// ส่วนที่เพิ่มใหม่ & แก้ไขสำหรับ Sprint 2
+// --------------------------------------------------
 
-model Case {
-  caseId        Int      @id @default(autoincrement())
-  topic         String?
-  status        String   @default("waiting_confirmation")
-  priority      String   @default("medium")
-  refCode       String?
-  createdAt     DateTime @default(now())
-  studentId     String
-  student       Student  @relation(fields: [studentId], references: [studentId])
-  counselorId   Int?
-  counselor     Counselor? @relation(fields: [counselorId], references: [userId])
-  sessions      Session[]
-}
-
-model ProblemTag {
-  id        Int      @id @default(autoincrement())
-  label     String   @unique
+// [NEW] จัดการห้อง: สร้างห้องเองได้และลบได้
+model Room {
+  roomId    Int       @id @default(autoincrement())
+  roomName  String    @unique
+  isActive  Boolean   @default(true) // Soft Delete
   sessions  Session[]
 }
 
+model ProblemTag {
+  id        Int       @id @default(autoincrement())
+  label     String    @unique
+  isActive  Boolean   @default(true) // Soft Delete ให้ลบ Tag ได้
+  sessions  Session[]
+}
+
+model Case {
+  caseId           Int       @id @default(autoincrement())
+  status           String    @default("waiting_confirmation")
+  queueToken       String?   @unique // Token สำหรับผู้ให้คำปรึกษา (6X000N)
+  priority         String    @default("medium") // ลำดับความเร่งด่วน
+  
+  // เก็บเวลาเพื่อเอาไปคำนวณระยะเวลารอเฉลี่ย (Waiting -> Home)
+  waitingEnteredAt DateTime?
+  homeEnteredAt    DateTime? 
+  
+  createdAt        DateTime  @default(now())
+  confirmedAt      DateTime?
+  
+  clientId         String
+  client           client   @relation(fields: [clientId], references: [clientId])
+  counselorId      Int?
+  counselor        Counselor? @relation(fields: [counselorId], references: [userId])
+  
+  sessions         Session[]
+}
+
 model Session {
-  sessionId     Int      @id @default(autoincrement())
-  sessionName   String?
-  timeStart     DateTime
-  timeEnd       DateTime
-  location      String?
-  status        String   @default("available")
-  createdAt     DateTime @default(now())
-  caseId        Int?
-  case          Case?    @relation(fields: [caseId], references: [caseId])
-  counselorId   Int?
-  counselor     Counselor? @relation(fields: [counselorId], references: [userId])
-  counselorNote String?    @db.Text
-  moodScale     Int?
-  problemTags   ProblemTag[]
+  sessionId         Int       @id @default(autoincrement())
+  sessionName       String?
+  timeStart         DateTime?
+  timeEnd           DateTime?
+  
+  roomId            Int?
+  room              Room?     @relation(fields: [roomId], references: [roomId]) 
+  
+  status            String    @default("available")
+  createdAt         DateTime  @default(now())
+  
+  caseId            Int?
+  case              Case?     @relation(fields: [caseId], references: [caseId])
+  counselorId       Int?
+  counselor         Counselor? @relation(fields: [counselorId], references: [userId])
+  
+  counselorKeyword  String?   @db.Text
+  counselorNote     String?   @db.Text
+  counselorFollowup String?   @db.Text
+  moodScale         Int?
+  
+  problemTags       ProblemTag[]
+  histories         SessionHistory[] 
+}
+
+// [NEW] เก็บประวัติการแก้ไข Case Note
+model SessionHistory {
+  id          Int      @id @default(autoincrement())
+  sessionId   Int      
+  session     Session  @relation(fields: [sessionId], references: [sessionId])
+  action      String   // เช่น "Note Edited"
+  details     String?  @db.Text
+  editedBy    Int      // userId ของคนที่เข้ามาแก้ไข
+  timestamp   DateTime @default(now())
 }
