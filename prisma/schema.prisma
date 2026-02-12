@@ -19,7 +19,7 @@ model User {
   isConsentAccepted Boolean   @default(false) 
   consentAcceptedAt DateTime?
   
-  clientProfile    client?
+  clientProfile     Client?
   counselorProfile  Counselor?
   // ถอด Admin ออกแล้วตาม Requirement
 }
@@ -32,10 +32,10 @@ model RegistrationCode {
   usedAt    DateTime?
 }
 
-model client {
+model Client {
   userId      Int     @id
   user        User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
-  clientId   String  @unique
+  clientId    String  @unique
   major       String?
   department  String?
   cases       Case[]
@@ -82,7 +82,7 @@ model Case {
   confirmedAt      DateTime?
   
   clientId         String
-  client           client   @relation(fields: [clientId], references: [clientId])
+  client           Client   @relation(fields: [clientId], references: [clientId])
   counselorId      Int?
   counselor        Counselor? @relation(fields: [counselorId], references: [userId])
   
