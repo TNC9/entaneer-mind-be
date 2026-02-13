@@ -13,7 +13,7 @@ model User {
   firstName         String
   lastName          String
   phoneNum          String?
-  roleName          String    // Sprint 2: เหลือแค่ 'client' กับ 'counselor'
+  roleName          String
   gender            String?
   createdAt         DateTime  @default(now())
   isConsentAccepted Boolean   @default(false) 
@@ -21,7 +21,6 @@ model User {
   
   clientProfile     Client?
   counselorProfile  Counselor?
-  // ถอด Admin ออกแล้วตาม Requirement
 }
 
 model RegistrationCode {
@@ -49,32 +48,26 @@ model Counselor {
   sessions        Session[]
 }
 
-// --------------------------------------------------
-// ส่วนที่เพิ่มใหม่ & แก้ไขสำหรับ Sprint 2
-// --------------------------------------------------
-
-// [NEW] จัดการห้อง: สร้างห้องเองได้และลบได้
 model Room {
   roomId    Int       @id @default(autoincrement())
   roomName  String    @unique
-  isActive  Boolean   @default(true) // Soft Delete
+  isActive  Boolean   @default(true)
   sessions  Session[]
 }
 
 model ProblemTag {
   id        Int       @id @default(autoincrement())
   label     String    @unique
-  isActive  Boolean   @default(true) // Soft Delete ให้ลบ Tag ได้
+  isActive  Boolean   @default(true)
   sessions  Session[]
 }
 
 model Case {
   caseId           Int       @id @default(autoincrement())
   status           String    @default("waiting_confirmation")
-  queueToken       String?   @unique // Token สำหรับผู้ให้คำปรึกษา (6X000N)
-  priority         String    @default("medium") // ลำดับความเร่งด่วน
+  queueToken       String?   @unique
+  priority         String    @default("medium")
   
-  // เก็บเวลาเพื่อเอาไปคำนวณระยะเวลารอเฉลี่ย (Waiting -> Home)
   waitingEnteredAt DateTime?
   homeEnteredAt    DateTime? 
   
@@ -115,13 +108,12 @@ model Session {
   histories         SessionHistory[] 
 }
 
-// [NEW] เก็บประวัติการแก้ไข Case Note
 model SessionHistory {
   id          Int      @id @default(autoincrement())
   sessionId   Int      
   session     Session  @relation(fields: [sessionId], references: [sessionId])
-  action      String   // เช่น "Note Edited"
+  action      String   
   details     String?  @db.Text
-  editedBy    Int      // userId ของคนที่เข้ามาแก้ไข
+  editedBy    Int      
   timestamp   DateTime @default(now())
 }
