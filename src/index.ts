@@ -10,7 +10,7 @@ import authRoutes from "./routes/authRoutes";
 import userRoutes from './routes/userRoutes';
 import caseRoutes from './routes/caseRoutes';
 import bookingRoutes from './routes/bookingRoutes';
-import studentProfileRoutes from './routes/studentProfileRoutes';
+import clientProfileRoutes from './routes/clientProfileRoutes';
 
 dotenv.config();
 
@@ -26,7 +26,7 @@ app.use("/api/auth", authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cases', caseRoutes);
 app.use('/api', bookingRoutes);
-app.use('/api/student', studentProfileRoutes);
+app.use('/api/client', clientProfileRoutes);
 
 // --- Special Routes / Callbacks ---
 app.get("/cmuEntraIDCallback", cmuCallback);

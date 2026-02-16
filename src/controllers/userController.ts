@@ -15,12 +15,12 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.findUnique({
       where: { userId: userId },
       include: {
-        studentProfile: {
+        clientProfile: {
           include: {
             cases: {
-              // แนบข้อมูล Student และ User (ชื่อ-สกุล) มาใน Case ด้วย
+              // แนบข้อมูล client และ User (ชื่อ-สกุล) มาใน Case ด้วย
               include: {
-                 student: {
+                 client: {
                     include: { user: true } 
                  },
                  sessions: {
@@ -31,8 +31,7 @@ export const getMe = async (req: AuthRequest, res: Response) => {
             } 
           }
         },   
-        counselorProfile: true, 
-        adminProfile: true      
+        counselorProfile: true,
       }
     });
 
@@ -41,15 +40,15 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     // 2. Logic เช็คสถานะ (Flow Status)
     let flowStatus = 'normal'; 
 
-    if (user.roleName === 'student') {
+    if (user.roleName === 'client') {
        if (!user.isConsentAccepted) {
           flowStatus = 'require_consent';
        }
-       else if (!user.studentProfile?.cases || user.studentProfile.cases.length === 0) {
+       else if (!user.clientProfile?.cases || user.clientProfile.cases.length === 0) {
           flowStatus = 'require_token';
        } 
        else {
-          const cases = user.studentProfile.cases;
+          const cases = user.clientProfile.cases;
           const isWaiting = cases.some((c: any) => c.status === 'waiting_confirmation');
           
           if (isWaiting) {
@@ -62,19 +61,18 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     // แปลงจาก Database Structure -> Frontend Friendly Structure
     const safeUser = {
         ...user,
-        pswHash: undefined, // ลบ Password ทิ้งเพื่อความปลอดภัย
-        studentProfile: user.studentProfile ? {
-            ...user.studentProfile,
-            cases: user.studentProfile.cases.map((c: any) => ({
+        clientProfile: user.clientProfile ? {
+            ...user.clientProfile,
+            cases: user.clientProfile.cases?.map((c: any) => ({
                 ...c,
                 // แปลง Session แต่ละอัน
-                sessions: c.sessions.map((s: any) => ({
+                sessions: c.sessions?.map((s: any) => ({
                     ...s,
                     // แปลงร่าง: ดึงแค่ label ออกมาใส่ Array
                     // จาก [{label: "เครียด"}, {label: "การเรียน"}] -> ["เครียด", "การเรียน"]
-                    problemTags: s.problemTags.map((t: any) => t.label)
-                }))
-            }))
+                    problemTags: s.problemTags?.map((t: any) => t.label) || []
+                })) || []
+            })) || []
         } : null
     };
     

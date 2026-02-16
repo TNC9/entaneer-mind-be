@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../prisma';
-import { AuthRequest, requireStudent } from '../middleware/authMiddleware';
+import { AuthRequest, requireClient } from '../middleware/authMiddleware';
 
 // Search available slots
 export const searchSlots = async (req: Request, res: Response) => {
@@ -32,25 +32,12 @@ export const searchSlots = async (req: Request, res: Response) => {
     }
 
     const availableSlots = await prisma.session.findMany({
-      where: {
-        status: 'available',
-        ...dateFilter
-      },
+      where: { status: 'available', ...dateFilter },
       include: {
-        counselor: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true
-              }
-            }
-          }
-        }
+        room: true,
+        counselor: { include: { user: { select: { firstName: true, lastName: true } } } }
       },
-      orderBy: {
-        timeStart: 'asc'
-      }
+      orderBy: { timeStart: 'asc' }
     });
 
     // Transform to match frontend TimeSlot interface
@@ -64,21 +51,15 @@ export const searchSlots = async (req: Request, res: Response) => {
       available: slot.status === 'available',
       counselor: `${slot.counselor?.user.firstName} ${slot.counselor?.user.lastName}`,
       sessionName: slot.sessionName,
-      location: slot.location,
+      location: slot.room?.roomName || 'N/A',
       timeStart: slot.timeStart,
       timeEnd: slot.timeEnd
     }));
 
-    res.status(200).json({
-      success: true,
-      data: timeSlots
-    });
+    res.status(200).json({ success: true, data: timeSlots });
   } catch (error) {
     console.error('Error searching slots:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to search available slots'
-    });
+    res.status(500).json({ success: false, message: 'Failed to search available slots' });
   }
 };
 
@@ -86,12 +67,12 @@ export const searchSlots = async (req: Request, res: Response) => {
 export const bookSlot = async (req: AuthRequest, res: Response) => {
   try {
     const { sessionId, description, date } = req.body;
-    const student = req.student; // Pre-populated by middleware
+    const client = req.client; // Pre-populated by middleware
 
-    if (!sessionId || !student) {
+    if (!sessionId || !client) {
       return res.status(400).json({
         success: false,
-        message: 'Session ID and student authentication required'
+        message: 'Session ID and client authentication required'
       });
     }
 
@@ -117,6 +98,7 @@ export const bookSlot = async (req: AuthRequest, res: Response) => {
       const session = await tx.session.findUnique({
         where: { sessionId },
         include: {
+          room: true,
           counselor: {
             include: {
               user: {
@@ -137,10 +119,9 @@ export const bookSlot = async (req: AuthRequest, res: Response) => {
       // Create a case for this booking
       const newCase = await tx.case.create({
         data: {
-          studentId: student.studentId,
+          clientId: client.clientId,
           counselorId: session.counselorId,
           status: 'booked',
-          topic: description || 'General counseling session'
         }
       });
 
@@ -151,6 +132,7 @@ export const bookSlot = async (req: AuthRequest, res: Response) => {
           caseId: newCase.caseId
         },
         include: {
+          room: true,
           counselor: {
             include: {
               user: {
@@ -177,7 +159,7 @@ export const bookSlot = async (req: AuthRequest, res: Response) => {
       }),
       counselor: `${result.session.counselor?.user.firstName} ${result.session.counselor?.user.lastName}`,
       sessionName: result.session.sessionName,
-      location: result.session.location,
+      location: result.session.room?.roomName || 'N/A',
       date: date || new Date(result.session.timeStart).toLocaleDateString('th-TH', {
         month: 'short', 
         day: 'numeric', 
@@ -201,25 +183,26 @@ export const bookSlot = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Get student booking history
-export const getStudentBookings = async (req: AuthRequest, res: Response) => {
+// Get client booking history
+export const getClientBookings = async (req: AuthRequest, res: Response) => {
   try {
-    const student = req.student; // Pre-populated by middleware
+    const client = req.client; // Pre-populated by middleware
 
-    if (!student) {
+    if (!client) {
       return res.status(401).json({
         success: false,
-        message: 'Student not authenticated'
+        message: 'client not authenticated'
       });
     }
 
     const bookings = await prisma.case.findMany({
       where: {
-        studentId: student.studentId
+        clientId: client.clientId
       },
       include: {
         sessions: {
           include: {
+            room: true,
             counselor: {
               include: {
                 user: {
@@ -280,10 +263,10 @@ export const getStudentBookings = async (req: AuthRequest, res: Response) => {
         }),
         counselor: `${session.counselor?.user.firstName} ${session.counselor?.user.lastName}`,
         status,
-        notes: booking.topic || 'General counseling session',
+        notes: 'General counseling session',
         sessionId: session.sessionId,
         sessionName: session.sessionName,
-        location: session.location
+        location: session.room?.roomName || 'N/A'
       };
     }).filter(Boolean); // Remove null entries
 
@@ -292,7 +275,7 @@ export const getStudentBookings = async (req: AuthRequest, res: Response) => {
       data: appointments
     });
   } catch (error) {
-    console.error('Error getting student bookings:', error);
+    console.error('Error getting client bookings:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to retrieve booking history'
@@ -304,12 +287,12 @@ export const getStudentBookings = async (req: AuthRequest, res: Response) => {
 export const cancelBooking = async (req: AuthRequest, res: Response) => {
   try {
     const { sessionId } = req.body;
-    const student = req.student; // Pre-populated by middleware
+    const client = req.client; // Pre-populated by middleware
 
-    if (!sessionId || !student) {
+    if (!sessionId || !client) {
       return res.status(400).json({
         success: false,
-        message: 'Session ID and student authentication required'
+        message: 'Session ID and client authentication required'
       });
     }
 
@@ -328,8 +311,8 @@ export const cancelBooking = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if this booking belongs to the authenticated student
-    if (!session.case || session.case.studentId !== student.studentId) {
+    // Check if this booking belongs to the authenticated client
+    if (!session.case || session.case.clientId !== client.clientId) {
       return res.status(403).json({
         success: false,
         message: 'You can only cancel your own bookings'
@@ -337,7 +320,7 @@ export const cancelBooking = async (req: AuthRequest, res: Response) => {
     }
 
     // Check 24-hour rule
-    const sessionTime = new Date(session.timeStart);
+    const sessionTime = new Date(session.timeStart!);
     const now = new Date();
     const hoursUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 

@@ -12,7 +12,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
   try {
     const { 
       cmuAccount, firstName, lastName, roleName, phoneNum, 
-      studentId, major, department 
+      clientId, major, department 
     } = req.body;
 
     // เช็คซ้ำ
@@ -28,17 +28,17 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         cmuAccount,
         firstName,
         lastName,
-        roleName: roleName || 'student',
+        roleName: roleName || 'client',
         phoneNum,
-        studentProfile: (roleName === 'student' && studentId) ? {
+        clientProfile: (roleName === 'client' && clientId) ? {
           create: {
-            studentId,
+            clientId,
             major: major || 'General',
             department: department || 'General'
           }
         } : undefined
       },
-      include: { studentProfile: true }
+      include: { clientProfile: true }
     });
 
     res.status(201).json({ message: 'User created successfully', user: newUser });
@@ -56,7 +56,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     const { cmuAccount } = req.body;
     const user = await prisma.user.findUnique({
       where: { cmuAccount },
-      include: { studentProfile: true, counselorProfile: true }
+      include: { clientProfile: true, counselorProfile: true }
     });
 
     if (!user) {
@@ -115,7 +115,7 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
 
     let user = await prisma.user.findUnique({ 
         where: { cmuAccount: email },
-        include: { studentProfile: true } // check ว่ามี profile หรือยัง
+        include: { clientProfile: true } // check ว่ามี profile หรือยัง
     });
 
     if (!user) {
@@ -125,25 +125,23 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
           cmuAccount: email,
           firstName: cmuData.givenName || 'Unknown',
           lastName: cmuData.surname || 'Unknown',
-          roleName: 'student', 
+          roleName: 'client', 
         },
-        include: { studentProfile: true } // create แล้ว return profile มาด้วย
+        include: { clientProfile: true } // create แล้ว return profile มาด้วย
       });
     }
 
-    // 2. ถ้าเป็น Student แต่ยังไม่มี Profile ในตาราง Student ให้สร้างเพิ่ม
-    if (user.roleName === 'student' && !user.studentProfile) {
-        // ดึง Student ID จาก email (เดาจาก format: firstname_surname@cmu.ac.th)
-        // หรือถ้าใน CMU Data มี studentId ก็ใช้ได้เลย
-        // เบื้องต้นใช้ email prefix ไปก่อน หรือสุ่มเลขถ้าหาไม่เจอ
-        const studentIdFromEmail = email.split('@')[0]; 
+    // 2. ถ้าเป็น client แต่ยังไม่มี Profile ในตาราง client ให้สร้างเพิ่ม
+    if (user.roleName === 'client' && !user.clientProfile) {
+        // ดึง client ID จาก email(รองรับทั้ง นศ. และบุคลากร)
+        const clientIdFromEmail = email.split('@')[0]; 
 
-        await prisma.student.create({
+        await prisma.client.create({
             data: {
                 userId: user.userId, // ผูกกับ User ID ที่เพิ่งสร้าง
-                studentId: studentIdFromEmail, // หรือใช้ cmuData.studentId ถ้ามี
+                clientId: clientIdFromEmail, // หรือใช้ cmuData.clientId ถ้ามี
                 major: 'General',      // ใส่ค่า default ไปก่อน
-                department: 'Engineering' 
+                department: 'General' 
             }
         });
     }

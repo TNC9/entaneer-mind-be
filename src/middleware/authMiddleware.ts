@@ -7,14 +7,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret-key-sud-yod';
 export interface AuthenticatedUser {
   userId: number;
   cmuAccount: string;
-  roleName: 'student' | 'counselor' | 'admin';
-  studentId?: string;
+  roleName: 'client' | 'counselor';
+  clientId?: string;
   counselorId?: number;
 }
 
 export interface AuthRequest extends Request {
   user?: AuthenticatedUser;
-  student?: any; // Populated for student routes
+  client?: any; // Populated for client routes
   counselor?: any; // Populated for counselor routes
 }
 
@@ -57,18 +57,18 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     let authenticatedUser: AuthenticatedUser = {
       userId: user.userId,
       cmuAccount: user.cmuAccount,
-      roleName: user.roleName as 'student' | 'counselor' | 'admin'
+      roleName: user.roleName as 'client' | 'counselor'
     };
 
-    // Add student data if applicable
-    if (user.roleName === 'student') {
-      const student = await prisma.student.findUnique({
+    // Add client data if applicable
+    if (user.roleName === 'client') {
+      const clientData = await prisma.client.findUnique({
         where: { userId: user.userId },
-        select: { studentId: true, major: true, department: true }
+        select: { clientId: true, major: true, department: true }
       });
-      if (student) {
-        authenticatedUser.studentId = student.studentId;
-        req.student = student;
+      if (clientData) {
+        authenticatedUser.clientId = clientData.clientId;
+        req.client = clientData;
       }
     }
 
@@ -116,11 +116,8 @@ export const requireRole = (roles: string[]) => {
   };
 };
 
-// Student-only middleware
-export const requireStudent = requireRole(['student']);
+// client-only middleware
+export const requireClient = requireRole(['client']);
 
 // Counselor-only middleware  
 export const requireCounselor = requireRole(['counselor']);
-
-// Admin-only middleware
-export const requireAdmin = requireRole(['admin']);

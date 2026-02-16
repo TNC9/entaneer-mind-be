@@ -1,40 +1,40 @@
 import { Response } from 'express';
 import { prisma } from '../prisma';
-import { AuthRequest, requireStudent } from '../middleware/authMiddleware';
+import { AuthRequest, requireClient } from '../middleware/authMiddleware';
 
-// Get Student Profile (for student profile page)
-export const getStudentProfile = async (req: AuthRequest, res: Response) => {
+// Get client Profile (for client profile page)
+export const getclientProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const student = req.student; // Pre-populated by middleware
+    const client = req.client; // Pre-populated by middleware
 
-    if (!student) {
+    if (!client) {
       return res.status(401).json({ 
         success: false,
-        message: 'Student not authenticated' 
+        message: 'client not authenticated' 
       });
     }
 
     const user = await prisma.user.findUnique({
       where: { userId: req.user!.userId },
       include: {
-        studentProfile: true
+        clientProfile: true
       }
     });
 
-    if (!user || !user.studentProfile) {
+    if (!user || !user.clientProfile) {
       return res.status(404).json({ 
         success: false,
-        message: 'Student profile not found' 
+        message: 'client profile not found' 
       });
     }
 
-    // Format for frontend StudentProfileProps
+    // Format for frontend clientProfileProps
     const profile = {
       name: `${user.firstName} ${user.lastName}`,
       email: user.cmuAccount,
       phone: user.phoneNum || '',
-      studentId: user.studentProfile.studentId,
-      department: user.studentProfile.department || '',
+      clientId: user.clientProfile.clientId,
+      department: user.clientProfile.department || '',
       enrollmentDate: user.createdAt.toLocaleDateString('th-TH', {
         day: 'numeric',
         month: 'long', 
@@ -48,24 +48,24 @@ export const getStudentProfile = async (req: AuthRequest, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Error getting student profile:', error);
+    console.error('Error getting client profile:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Failed to retrieve student profile' 
+      message: 'Failed to retrieve client profile' 
     });
   }
 };
 
-// Update Student Profile
-export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
+// Update client Profile
+export const updateclientProfile = async (req: AuthRequest, res: Response) => {
   try {
-    const student = req.student; // Pre-populated by middleware
+    const client = req.client; // Pre-populated by middleware
     const { name, phone, department } = req.body;
 
-    if (!student) {
+    if (!client) {
       return res.status(401).json({ 
         success: false,
-        message: 'Student not authenticated' 
+        message: 'client not authenticated' 
       });
     }
 
@@ -83,13 +83,13 @@ export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
         phoneNum: phone
       },
       include: {
-        studentProfile: true
+        clientProfile: true
       }
     });
 
-    // Update student profile
-    const updatedStudent = await prisma.student.update({
-      where: { studentId: student.studentId },
+    // Update client profile
+    const updatedclient = await prisma.client.update({
+      where: { clientId: client.clientId },
       data: {
         department
       }
@@ -100,8 +100,8 @@ export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
       name: `${updatedUser.firstName} ${updatedUser.lastName}`,
       email: updatedUser.cmuAccount,
       phone: updatedUser.phoneNum || '',
-      studentId: updatedStudent.studentId,
-      department: updatedStudent.department || '',
+      clientId: updatedclient.clientId,
+      department: updatedclient.department || '',
       enrollmentDate: updatedUser.createdAt.toLocaleDateString('th-TH', {
         day: 'numeric',
         month: 'long', 
@@ -116,10 +116,10 @@ export const updateStudentProfile = async (req: AuthRequest, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Error updating student profile:', error);
+    console.error('Error updating client profile:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Failed to update student profile' 
+      message: 'Failed to update client profile' 
     });
   }
 };
