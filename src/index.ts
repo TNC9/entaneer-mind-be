@@ -25,6 +25,8 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cases', caseRoutes);
+app.use('/api/appointments', bookingRoutes);
+app.use('/api/sessions', bookingRoutes);
 app.use('/api', bookingRoutes);
 app.use('/api/client', clientProfileRoutes);
 
