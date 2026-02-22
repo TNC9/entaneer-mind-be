@@ -1143,6 +1143,7 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
 
     const start = new Date(startDate as string);
     const end = new Date(endDate as string);
+    end.setHours(23, 59, 59, 999);
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       return res.status(400).json({
