@@ -1,31 +1,19 @@
-// src/controllers/bookingController.ts
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
 import nodemailer from "nodemailer";
+import { prisma } from "../prisma";
+import type { AuthRequest } from "../middleware/authMiddleware";
 
-const prisma = new PrismaClient();
-
-// If you already have auth middleware that sets req.user, use it.
-// Otherwise, for dev you can pass header: x-cmu-account: someone@cmu.ac.th
-type AuthedRequest = Request & {
-  user?: {
-    userId?: number;
-    cmuAccount?: string;
-    email?: string;
-  };
-};
-
-function getCmuAccount(req: AuthedRequest): string | null {
-  return (
-    req.user?.cmuAccount ||
-    req.user?.email ||
-    (req.headers["x-cmu-account"] as string | undefined) ||
-    null
-  );
+/** Helpers */
+function bangkokDayRangeUTC(dateYYYYMMDD: string): { start: Date; end: Date } {
+  // Interpret date as Bangkok local day
+  // Start: 00:00+07:00, End: next day 00:00+07:00
+  const start = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
+  const end = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
 }
 
 function formatTimeHHmmBangkok(date: Date): string {
-  // Thailand has no DST; using Intl timezone is safe here
   const parts = new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
@@ -36,15 +24,6 @@ function formatTimeHHmmBangkok(date: Date): string {
   const hh = parts.find((p) => p.type === "hour")?.value ?? "00";
   const mm = parts.find((p) => p.type === "minute")?.value ?? "00";
   return `${hh}:${mm}`;
-}
-
-function bangkokDayRangeUTC(dateYYYYMMDD: string): { start: Date; end: Date } {
-  // Interpret date as Bangkok local day
-  // Start: 00:00+07:00, End: next day 00:00+07:00
-  const start = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
-  const end = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
 }
 
 function buildMailer() {
@@ -63,14 +42,19 @@ function buildMailer() {
   });
 }
 
-export async function listCounselors(req: Request, res: Response) {
+/**
+ * GET /api/bookings/counselors
+ * Return active rooms (roomId + roomName).
+ * (counselorEmail is optional; we try to infer from sessions if available.)
+ */
+export async function listCounselors(_req: Request, res: Response) {
   try {
     const rooms = await prisma.room.findMany({
       where: { isActive: true },
       orderBy: { roomId: "asc" },
     });
 
-    // Try to find a representative counselor email per room from existing sessions
+    // Try to infer counselorEmail from any session in that room that has counselorId
     const reps = await prisma.session.findMany({
       where: {
         roomId: { in: rooms.map((r) => r.roomId) },
@@ -79,32 +63,32 @@ export async function listCounselors(req: Request, res: Response) {
       distinct: ["roomId"],
       select: {
         roomId: true,
-        counselor: {
-          select: {
-            user: { select: { cmuAccount: true, firstName: true, lastName: true } },
-          },
-        },
+        counselor: { select: { user: { select: { cmuAccount: true } } } },
       },
     });
 
     const repMap = new Map<number, string | null>();
     for (const r of reps) {
-      repMap.set(r.roomId ?? -1, r.counselor?.user?.cmuAccount ?? null);
+      if (r.roomId != null) repMap.set(r.roomId, r.counselor?.user?.cmuAccount ?? null);
     }
 
-    res.json(
+    return res.json(
       rooms.map((room) => ({
         roomId: room.roomId,
-        roomName: room.roomName, // ex. "พี่ป๊อป (ห้อง 1)"
+        roomName: room.roomName,
         counselorEmail: repMap.get(room.roomId) ?? null,
       }))
     );
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to load counselors" });
+    console.error("listCounselors error:", err);
+    return res.status(500).json({ message: "Failed to load counselors" });
   }
 }
 
+/**
+ * GET /api/bookings/sessions?roomId=1&date=YYYY-MM-DD
+ * Return slots (available or not) for selected room and day.
+ */
 export async function listSessions(req: Request, res: Response) {
   try {
     const date = String(req.query.date ?? "");
@@ -117,12 +101,12 @@ export async function listSessions(req: Request, res: Response) {
       return res.status(400).json({ message: "Invalid roomId" });
     }
 
-    const { start, end } = bangkokDayRangeUTC(date);
-
     const room = await prisma.room.findUnique({ where: { roomId } });
     if (!room || !room.isActive) {
       return res.status(404).json({ message: "Room not found" });
     }
+
+    const { start, end } = bangkokDayRangeUTC(date);
 
     const sessions = await prisma.session.findMany({
       where: {
@@ -136,32 +120,40 @@ export async function listSessions(req: Request, res: Response) {
     });
 
     const slots = sessions
-      .filter((s) => !!s.timeStart) // just in case
+      .filter((s) => !!s.timeStart)
       .map((s) => ({
         sessionId: s.sessionId,
         timeStart: s.timeStart!.toISOString(),
         time: formatTimeHHmmBangkok(s.timeStart!),
-        available: s.status === "available",
+        available: (s.status || "").toLowerCase() === "available",
         counselor: room.roomName,
         counselorEmail: s.counselor?.user?.cmuAccount ?? null,
       }));
 
-    res.json({
+    return res.json({
       date,
       roomId,
       roomName: room.roomName,
       slots,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to load sessions" });
+    console.error("listSessions error:", err);
+    return res.status(500).json({ message: "Failed to load sessions" });
   }
 }
 
-export async function bookSession(req: AuthedRequest, res: Response) {
+/**
+ * POST /api/bookings/book
+ * Body: { sessionId, studentId, phone, description?, googleEventId? }
+ *
+ * Requires authenticateToken + requireClient in routes so req.user exists.
+ */
+export async function bookSession(req: AuthRequest, res: Response) {
   try {
-    const cmuAccount = getCmuAccount(req);
-    if (!cmuAccount) {
+    const userId = req.user?.userId;
+    const cmuAccount = req.user?.cmuAccount;
+
+    if (!userId || !cmuAccount) {
       return res.status(401).json({ message: "Unauthorized (missing cmuAccount)" });
     }
 
@@ -183,14 +175,12 @@ export async function bookSession(req: AuthedRequest, res: Response) {
       return res.status(400).json({ message: "phone must be 10 digits" });
     }
 
+    // Load user + client profile
     const user = await prisma.user.findUnique({
-      where: { cmuAccount },
+      where: { userId },
       include: { clientProfile: true },
     });
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found (cmuAccount)" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     // Ensure client profile exists and matches studentId
     let client = user.clientProfile;
@@ -207,15 +197,15 @@ export async function bookSession(req: AuthedRequest, res: Response) {
       });
     }
 
-    // Save phone to User
-    if (user.phoneNum !== phone) {
+    // Save phone into User.phoneNum (optional)
+    if ((user.phoneNum || "") !== phone) {
       await prisma.user.update({
         where: { userId: user.userId },
         data: { phoneNum: phone },
       });
     }
 
-    // Find latest case for this client, or create one if none
+    // Find latest case for this client, create if none
     let latestCase = await prisma.case.findFirst({
       where: { clientId: client.clientId },
       orderBy: { createdAt: "desc" },
@@ -225,13 +215,13 @@ export async function bookSession(req: AuthedRequest, res: Response) {
       latestCase = await prisma.case.create({
         data: {
           clientId: client.clientId,
-          // status/priority defaults apply
+          // status/priority defaults
         },
       });
     }
 
-    // Transaction: reserve session if still available + write history
-    const txResult = await prisma.$transaction(async (tx) => {
+    // Transaction: reserve the session atomically + history record
+    const result = await prisma.$transaction(async (tx) => {
       const session = await tx.session.findUnique({
         where: { sessionId },
         include: {
@@ -244,14 +234,13 @@ export async function bookSession(req: AuthedRequest, res: Response) {
         return { ok: false as const, status: 404, message: "Session not found" };
       }
 
-      // Atomic conditional update (prevents double-book)
+      // Atomic conditional update to prevent double booking
       const updated = await tx.session.updateMany({
         where: { sessionId, status: "available" },
         data: {
           status: "booked",
           sessionName: studentId,
           caseId: latestCase.caseId,
-          // moodScale: (cannot copy from Case; Case has no moodScale in your schema)
         },
       });
 
@@ -259,68 +248,69 @@ export async function bookSession(req: AuthedRequest, res: Response) {
         return { ok: false as const, status: 409, message: "Session already booked" };
       }
 
+      // ✅ Store what the user typed (description) in history details
       await tx.sessionHistory.create({
         data: {
           sessionId,
-          action: "BOOKING_REQUEST",
+          action: "CLIENT_BOOKED",
           details: JSON.stringify({
             studentId,
             phone,
             description: description ?? "",
             googleEventId: googleEventId ?? null,
-            bookedAt: new Date().toISOString(),
+            roomName: session.room?.roomName ?? null,
+            timeStart: session.timeStart.toISOString(),
           }),
           editedBy: user.userId,
         },
       });
 
-      const roomName = session.room?.roomName ?? `Room ${session.roomId ?? ""}`;
-      const timeStr = formatTimeHHmmBangkok(session.timeStart);
-
       return {
         ok: true as const,
-        roomName,
+        roomName: session.room?.roomName ?? "ห้อง",
         counselorEmail: session.counselor?.user?.cmuAccount ?? null,
         timeStartISO: session.timeStart.toISOString(),
-        timeHHmm: timeStr,
+        timeHHmm: formatTimeHHmmBangkok(session.timeStart),
         caseId: latestCase.caseId,
       };
     });
 
-    if (!txResult.ok) {
-      return res.status(txResult.status).json({ message: txResult.message });
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message });
     }
 
-    // Email client confirmation (from CMU account via SMTP)
+    // Optional email to client (only if SMTP env exists)
     const mailer = buildMailer();
     if (mailer) {
       const from = process.env.MAIL_FROM ?? process.env.SMTP_USER!;
-      const to = cmuAccount.includes("@") ? cmuAccount : `${cmuAccount}@cmu.ac.th`;
+      const to = cmuAccount; // already stored as cmu account email
 
       const subject = "ยืนยันคำขอจองคิวรับคำปรึกษา (Entaneer Mind)";
       const text = [
         `เราได้รับคำขอจองคิวของคุณแล้ว`,
         ``,
-        `ห้อง/ผู้ให้คำปรึกษา: ${txResult.roomName}`,
-        `เวลา: ${txResult.timeHHmm} น.`,
-        `Case ID: ${txResult.caseId}`,
+        `ผู้ให้คำปรึกษา/ห้อง: ${result.roomName}`,
+        `วันเวลา: ${result.timeHHmm} น.`,
+        `Case ID: ${result.caseId}`,
+        ``,
+        `เรื่องที่ต้องการปรึกษา: ${description ?? "-"}`,
         ``,
         `หมายเหตุ: ระบบจะอัปเดตสถานะเมื่อผู้ให้คำปรึกษายืนยัน`,
       ].join("\n");
 
-      // Don't fail booking if mail fails
-      mailer.sendMail({ from, to, subject, text }).catch((e: unknown) => {
+      mailer.sendMail({ from, to, subject, text }).catch((e) => {
         console.error("Mail error:", e);
       });
     }
 
     return res.json({
       message: "Booked successfully",
-      caseId: txResult.caseId,
-      timeStart: txResult.timeStartISO,
+      caseId: result.caseId,
+      sessionId,
+      timeStart: result.timeStartISO,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Booking failed" });
+    console.error("bookSession error:", err);
+    return res.status(500).json({ message: "Booking failed" });
   }
 }
