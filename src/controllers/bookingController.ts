@@ -1,734 +1,326 @@
-import { Request, Response } from 'express';
-import { prisma } from '../prisma';
-import { AuthRequest } from '../middleware/authMiddleware';
+// src/controllers/bookingController.ts
+import { Request, Response } from "express";
+import { PrismaClient } from "@prisma/client";
+import nodemailer from "nodemailer";
 
-const THAI_MONTHS: Record<string, number> = {
-  'ม.ค.': 0,
-  'ก.พ.': 1,
-  'มี.ค.': 2,
-  'เม.ย.': 3,
-  'พ.ค.': 4,
-  'มิ.ย.': 5,
-  'ก.ค.': 6,
-  'ส.ค.': 7,
-  'ก.ย.': 8,
-  'ต.ค.': 9,
-  'พ.ย.': 10,
-  'ธ.ค.': 11
+const prisma = new PrismaClient();
+
+// If you already have auth middleware that sets req.user, use it.
+// Otherwise, for dev you can pass header: x-cmu-account: someone@cmu.ac.th
+type AuthedRequest = Request & {
+  user?: {
+    userId?: number;
+    cmuAccount?: string;
+    email?: string;
+  };
 };
 
-const toTwoDigits = (value: number): string => (value < 10 ? `0${value}` : String(value));
+function getCmuAccount(req: AuthedRequest): string | null {
+  return (
+    req.user?.cmuAccount ||
+    req.user?.email ||
+    (req.headers["x-cmu-account"] as string | undefined) ||
+    null
+  );
+}
 
-const parseDateInput = (input: unknown): Date | null => {
-  if (typeof input !== 'string' || input.trim().length === 0) {
-    return null;
-  }
+function formatTimeHHmmBangkok(date: Date): string {
+  // Thailand has no DST; using Intl timezone is safe here
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Bangkok",
+  }).formatToParts(date);
 
-  const normalized = input.trim();
-  const directDate = new Date(normalized);
-  if (!Number.isNaN(directDate.getTime())) {
-    return directDate;
-  }
+  const hh = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const mm = parts.find((p) => p.type === "minute")?.value ?? "00";
+  return `${hh}:${mm}`;
+}
 
-  const thaiDateMatch = normalized.match(/^(\d{1,2})\s+([^\s]+)\s+(\d{4})$/u);
-  if (!thaiDateMatch) {
-    return null;
-  }
-
-  const day = Number(thaiDateMatch[1]);
-  const monthToken = thaiDateMatch[2].trim();
-  const thaiYear = Number(thaiDateMatch[3]);
-  const month = THAI_MONTHS[monthToken];
-  if (!Number.isInteger(day) || !Number.isInteger(thaiYear) || month === undefined) {
-    return null;
-  }
-
-  const gregorianYear = thaiYear > 2400 ? thaiYear - 543 : thaiYear;
-  const parsedDate = new Date(gregorianYear, month, day);
-  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
-};
-
-const normalizeTimeInput = (input: unknown): string | null => {
-  if (typeof input !== 'string') {
-    return null;
-  }
-
-  const trimmed = input.trim();
-  const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
-  if (!match) {
-    return null;
-  }
-
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-
-  return `${toTwoDigits(hour)}:${toTwoDigits(minute)}`;
-};
-
-const getDayRange = (date: Date) => {
-  const start = new Date(date);
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date(date);
-  end.setHours(23, 59, 59, 999);
-
+function bangkokDayRangeUTC(dateYYYYMMDD: string): { start: Date; end: Date } {
+  // Interpret date as Bangkok local day
+  // Start: 00:00+07:00, End: next day 00:00+07:00
+  const start = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
+  const end = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
+  end.setDate(end.getDate() + 1);
   return { start, end };
-};
+}
 
-const formatTime = (dateInput: Date | string | null): string => {
-  if (!dateInput) {
-    return '';
-  }
+function buildMailer() {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT ?? 587);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
 
-  const date = new Date(dateInput);
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
+  if (!host || !user || !pass) return null;
 
-  return date.toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    auth: { user, pass },
   });
-};
+}
 
-const getCounselorBaseName = (session: any): string => {
-  const firstName = session?.counselor?.user?.firstName?.trim() || '';
-  const lastName = session?.counselor?.user?.lastName?.trim() || '';
-  const fullName = `${firstName} ${lastName}`.trim();
-  if (fullName.length > 0) {
-    return fullName;
-  }
-  return `Counselor #${session?.counselorId ?? '-'}`;
-};
-
-const formatCounselorDisplayName = (session: any): string => {
-  const baseName = getCounselorBaseName(session);
-  const roomName = session?.room?.roomName?.trim();
-  return roomName ? `${baseName} (${roomName})` : baseName;
-};
-
-const normalizeCounselorName = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const toSlotPayload = (session: any) => ({
-  sessionId: session.sessionId,
-  time: formatTime(session.timeStart),
-  available: session.status === 'available',
-  counselor: formatCounselorDisplayName(session),
-  counselorId: session.counselorId,
-  sessionName: session.sessionName,
-  location: session.room?.roomName || 'N/A',
-  date: session.timeStart,
-  day: session.timeStart ? new Date(session.timeStart).toISOString().slice(0, 10) : null,
-  status: session.status
-});
-
-// Search available slots
-export const searchSlots = async (req: Request, res: Response) => {
+export async function listCounselors(req: Request, res: Response) {
   try {
-    const { date } = req.query;
-    const parsedDate = date ? parseDateInput(date) : null;
-
-    if (date && !parsedDate) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid date format'
-      });
-    }
-
-    const dateFilter = parsedDate
-      ? {
-          timeStart: {
-            gte: getDayRange(parsedDate).start,
-            lte: getDayRange(parsedDate).end
-          }
-        }
-      : {
-          timeStart: {
-            gte: new Date()
-          }
-        };
-
-    const availableSlots = await prisma.session.findMany({
-      where: { status: 'available', ...dateFilter },
-      include: {
-        room: true,
-        counselor: { include: { user: { select: { firstName: true, lastName: true } } } }
-      },
-      orderBy: { timeStart: 'asc' }
+    const rooms = await prisma.room.findMany({
+      where: { isActive: true },
+      orderBy: { roomId: "asc" },
     });
 
-    const timeSlots = availableSlots.map(toSlotPayload);
+    // Try to find a representative counselor email per room from existing sessions
+    const reps = await prisma.session.findMany({
+      where: {
+        roomId: { in: rooms.map((r) => r.roomId) },
+        counselorId: { not: null },
+      },
+      distinct: ["roomId"],
+      select: {
+        roomId: true,
+        counselor: {
+          select: {
+            user: { select: { cmuAccount: true, firstName: true, lastName: true } },
+          },
+        },
+      },
+    });
 
-    res.status(200).json({ success: true, data: timeSlots });
-  } catch (error) {
-    console.error('Error searching slots:', error);
-    res.status(500).json({ success: false, message: 'Failed to search available slots' });
+    const repMap = new Map<number, string | null>();
+    for (const r of reps) {
+      repMap.set(r.roomId ?? -1, r.counselor?.user?.cmuAccount ?? null);
+    }
+
+    res.json(
+      rooms.map((room) => ({
+        roomId: room.roomId,
+        roomName: room.roomName, // ex. "พี่ป๊อป (ห้อง 1)"
+        counselorEmail: repMap.get(room.roomId) ?? null,
+      }))
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to load counselors" });
   }
-};
+}
 
-// Get counselor schedule for today (or specific date)
-export const getCounselorTodayAppointments = async (req: Request, res: Response) => {
+export async function listSessions(req: Request, res: Response) {
   try {
-    const { date, counselorId } = req.query;
+    const date = String(req.query.date ?? "");
+    const roomId = Number(req.query.roomId);
 
-    const targetDate = date ? parseDateInput(date) : new Date();
-    if (!targetDate) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid date format'
-      });
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: "Invalid date (YYYY-MM-DD required)" });
+    }
+    if (!Number.isFinite(roomId)) {
+      return res.status(400).json({ message: "Invalid roomId" });
     }
 
-    const parsedCounselorId =
-      counselorId !== undefined && counselorId !== null
-        ? Number(counselorId)
-        : undefined;
+    const { start, end } = bangkokDayRangeUTC(date);
 
-    if (
-      parsedCounselorId !== undefined &&
-      (!Number.isInteger(parsedCounselorId) || parsedCounselorId <= 0)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid counselorId'
-      });
+    const room = await prisma.room.findUnique({ where: { roomId } });
+    if (!room || !room.isActive) {
+      return res.status(404).json({ message: "Room not found" });
     }
-
-    const { start, end } = getDayRange(targetDate);
 
     const sessions = await prisma.session.findMany({
       where: {
-        timeStart: {
-          gte: start,
-          lte: end
-        },
-        ...(parsedCounselorId ? { counselorId: parsedCounselorId } : {})
+        roomId,
+        timeStart: { gte: start, lt: end },
       },
+      orderBy: [{ timeStart: "asc" }, { sessionId: "asc" }],
       include: {
-        room: true,
-        counselor: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true
-              }
-            }
-          }
-        }
+        counselor: { include: { user: true } },
       },
-      orderBy: { timeStart: 'asc' }
     });
 
-    res.status(200).json({
-      success: true,
-      data: sessions.map(toSlotPayload)
-    });
-  } catch (error) {
-    console.error('Error getting counselor schedule:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get counselor schedule'
-    });
-  }
-};
+    const slots = sessions
+      .filter((s) => !!s.timeStart) // just in case
+      .map((s) => ({
+        sessionId: s.sessionId,
+        timeStart: s.timeStart!.toISOString(),
+        time: formatTimeHHmmBangkok(s.timeStart!),
+        available: s.status === "available",
+        counselor: room.roomName,
+        counselorEmail: s.counselor?.user?.cmuAccount ?? null,
+      }));
 
-// Book a slot
-export const bookSlot = async (req: AuthRequest, res: Response) => {
-  try {
-    const {
-      sessionId,
-      description,
+    res.json({
       date,
-      time,
-      counselorName,
-      counselorId,
-      studentId,
-      faculty,
-      phone
-    } = req.body;
-    const client = req.client; // Pre-populated by middleware
-    const userId = req.user?.userId;
-
-    if (!client) {
-      return res.status(401).json({
-        success: false,
-        message: 'Client authentication required'
-      });
-    }
-
-    let selectedSession: any | null = null;
-
-    if (sessionId) {
-      selectedSession = await prisma.session.findFirst({
-        where: {
-          sessionId: Number(sessionId),
-          status: 'available'
-        },
-        include: {
-          room: true,
-          counselor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true
-                }
-              }
-            }
-          }
-        }
-      });
-    } else {
-      const parsedDate = parseDateInput(date);
-      const normalizedTime = normalizeTimeInput(time);
-      if (!parsedDate || !normalizedTime) {
-        return res.status(400).json({
-          success: false,
-          message: 'sessionId or valid date/time is required for booking'
-        });
-      }
-
-      const { start, end } = getDayRange(parsedDate);
-      const maybeCounselorId =
-        counselorId !== undefined && counselorId !== null
-          ? Number(counselorId)
-          : undefined;
-
-      const candidates = await prisma.session.findMany({
-        where: {
-          status: 'available',
-          timeStart: {
-            gte: start,
-            lte: end
-          },
-          ...(maybeCounselorId && Number.isInteger(maybeCounselorId)
-            ? { counselorId: maybeCounselorId }
-            : {})
-        },
-        include: {
-          room: true,
-          counselor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true
-                }
-              }
-            }
-          }
-        }
-      });
-
-      const byTime = candidates.filter((session: any) => {
-        if (!session.timeStart) {
-          return false;
-        }
-        return formatTime(session.timeStart) === normalizedTime;
-      });
-
-      const byCounselorName =
-        typeof counselorName === 'string' && counselorName.trim().length > 0
-          ? byTime.filter((session: any) => {
-              const target = normalizeCounselorName(counselorName);
-              const displayName = normalizeCounselorName(formatCounselorDisplayName(session));
-              const baseName = normalizeCounselorName(getCounselorBaseName(session));
-              return target === displayName || target === baseName;
-            })
-          : byTime;
-
-      if (byCounselorName.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'No matching available session found for selected date/time'
-        });
-      }
-
-      if (byCounselorName.length > 1) {
-        return res.status(409).json({
-          success: false,
-          message: 'Multiple matching sessions found. Please provide sessionId.'
-        });
-      }
-
-      selectedSession = byCounselorName[0];
-    }
-
-    if (!selectedSession) {
-      return res.status(404).json({
-        success: false,
-        message: 'Session not found or no longer available'
-      });
-    }
-
-    if (!selectedSession.timeStart) {
-      return res.status(400).json({
-        success: false,
-        message: 'Selected session does not have a valid start time'
-      });
-    }
-
-    // Enforce one active booking per client (matches frontend booking constraint)
-    const existingActiveCase = await prisma.case.findFirst({
-      where: {
-        clientId: client.clientId,
-        status: { not: 'cancelled' },
-        sessions: {
-          some: {
-            timeStart: { gte: new Date() },
-            status: { not: 'available' }
-          }
-        }
-      },
-      select: { caseId: true }
+      roomId,
+      roomName: room.roomName,
+      slots,
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to load sessions" });
+  }
+}
 
-    if (existingActiveCase) {
-      return res.status(409).json({
-        success: false,
-        message: 'You already have an active appointment. Please cancel it before booking a new one.'
-      });
+export async function bookSession(req: AuthedRequest, res: Response) {
+  try {
+    const cmuAccount = getCmuAccount(req);
+    if (!cmuAccount) {
+      return res.status(401).json({ message: "Unauthorized (missing cmuAccount)" });
     }
 
-    // ATOMIC BOOKING: Use transaction to prevent race condition
-    const result = await prisma.$transaction(async (tx: any) => {
-      // First, atomically update session status if available
-      const updatedSession = await tx.session.updateMany({
-        where: {
-          sessionId: selectedSession.sessionId,
-          status: 'available'
-        },
-        data: {
-          status: 'booked'
-        }
-      });
-
-      // If no session was updated, it means it was already booked
-      if (updatedSession.count === 0) {
-        throw new Error('SESSION_NOT_AVAILABLE');
-      }
-
-      // Get the session details for case creation
-      const session = await tx.session.findUnique({
-        where: { sessionId: selectedSession.sessionId },
-        include: {
-          room: true,
-          counselor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true
-                }
-              }
-            }
-          }
-        }
-      });
-
-      if (!session) {
-        throw new Error('SESSION_NOT_FOUND');
-      }
-
-      // Create a case for this booking
-      const newCase = await tx.case.create({
-        data: {
-          clientId: client.clientId,
-          counselorId: session.counselorId,
-          status: 'booked',
-        }
-      });
-
-      // Update session with caseId
-      const finalSession = await tx.session.update({
-        where: { sessionId: selectedSession.sessionId },
-        data: {
-          caseId: newCase.caseId
-        },
-        include: {
-          room: true,
-          counselor: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true
-                }
-              }
-            }
-          }
-        }
-      });
-
-      if (userId) {
-        await tx.sessionHistory.create({
-          data: {
-            sessionId: finalSession.sessionId,
-            action: 'booking_created',
-            details: JSON.stringify({
-              description: typeof description === 'string' ? description.trim() : null,
-              studentId: typeof studentId === 'string' ? studentId.trim() : null,
-              faculty: typeof faculty === 'string' ? faculty.trim() : null,
-              phone: typeof phone === 'string' ? phone.trim() : null
-            }),
-            editedBy: userId
-          }
-        });
-      }
-
-      return { session: finalSession, case: newCase };
-    });
-
-    // Format response for frontend
-    const sessionStart = result.session.timeStart ? new Date(result.session.timeStart) : null;
-    const bookingResponse = {
-      sessionId: result.session.sessionId,
-      time: sessionStart ? formatTime(sessionStart) : normalizeTimeInput(time),
-      counselor: formatCounselorDisplayName(result.session),
-      sessionName: result.session.sessionName,
-      location: result.session.room?.roomName || 'N/A',
-      date:
-        (typeof date === 'string' && date.trim().length > 0 ? date.trim() : undefined) ||
-        (sessionStart
-          ? sessionStart.toLocaleDateString('th-TH', {
-              month: 'short',
-              day: 'numeric',
-              year: 'numeric'
-            })
-          : null),
-      description:
-        typeof description === 'string' && description.trim().length > 0
-          ? description.trim()
-          : 'General counseling session',
-      caseId: result.case.caseId,
-      counselorId: result.session.counselorId
+    const { sessionId, studentId, phone, description, googleEventId } = req.body as {
+      sessionId: number;
+      studentId: string;
+      phone: string;
+      description?: string;
+      googleEventId?: string | null;
     };
 
-    res.status(200).json({
-      success: true,
-      message: 'Slot booked successfully',
-      data: bookingResponse
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message === 'SESSION_NOT_AVAILABLE') {
-      return res.status(409).json({
-        success: false,
-        message: 'This slot was just booked by someone else. Please choose another time.'
-      });
+    if (!Number.isFinite(sessionId)) {
+      return res.status(400).json({ message: "sessionId is required" });
+    }
+    if (!studentId || !/^\d{9}$/.test(studentId)) {
+      return res.status(400).json({ message: "studentId must be 9 digits" });
+    }
+    if (!phone || !/^\d{10}$/.test(phone)) {
+      return res.status(400).json({ message: "phone must be 10 digits" });
     }
 
-    if (error instanceof Error && error.message === 'SESSION_NOT_FOUND') {
-      return res.status(404).json({
-        success: false,
-        message: 'Session not found'
-      });
+    const user = await prisma.user.findUnique({
+      where: { cmuAccount },
+      include: { clientProfile: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found (cmuAccount)" });
     }
 
-    console.error('Error booking slot:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to book slot'
-    });
-  }
-};
-
-// Get client booking history
-export const getClientBookings = async (req: AuthRequest, res: Response) => {
-  try {
-    const client = req.client; // Pre-populated by middleware
-
+    // Ensure client profile exists and matches studentId
+    let client = user.clientProfile;
     if (!client) {
-      return res.status(401).json({
-        success: false,
-        message: 'client not authenticated'
+      client = await prisma.client.create({
+        data: {
+          userId: user.userId,
+          clientId: studentId,
+        },
+      });
+    } else if (client.clientId !== studentId) {
+      return res.status(400).json({
+        message: "studentId does not match your client profile",
       });
     }
 
-    const bookings = await prisma.case.findMany({
-      where: {
-        clientId: client.clientId
-      },
-      include: {
-        sessions: {
-          include: {
-            room: true,
-            counselor: {
-              include: {
-                user: {
-                  select: {
-                    firstName: true,
-                    lastName: true
-                  }
-                }
-              }
-            }
-          }
-        },
-        counselor: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true
-              }
-            }
-          }
-        }
-      },
-      orderBy: {
-        createdAt: 'desc'
-      }
+    // Save phone to User
+    if (user.phoneNum !== phone) {
+      await prisma.user.update({
+        where: { userId: user.userId },
+        data: { phoneNum: phone },
+      });
+    }
+
+    // Find latest case for this client, or create one if none
+    let latestCase = await prisma.case.findFirst({
+      where: { clientId: client.clientId },
+      orderBy: { createdAt: "desc" },
     });
 
-    // Transform to match frontend Appointment interface
-    const appointments = bookings.map((booking: any) => {
-      const session = booking.sessions[0]; // Get first session from case
-      if (!session) return null;
-      if (!session.timeStart) return null;
+    if (!latestCase) {
+      latestCase = await prisma.case.create({
+        data: {
+          clientId: client.clientId,
+          // status/priority defaults apply
+        },
+      });
+    }
 
-      const now = new Date();
-      const sessionTime = new Date(session.timeStart);
-      
-      // Determine status based on session time and booking status
-      let status: 'upcoming' | 'completed' | 'cancelled';
-      if (booking.status === 'cancelled') {
-        status = 'cancelled';
-      } else if (sessionTime > now) {
-        status = 'upcoming';
-      } else {
-        status = 'completed';
+    // Transaction: reserve session if still available + write history
+    const txResult = await prisma.$transaction(async (tx) => {
+      const session = await tx.session.findUnique({
+        where: { sessionId },
+        include: {
+          room: true,
+          counselor: { include: { user: true } },
+        },
+      });
+
+      if (!session || !session.timeStart) {
+        return { ok: false as const, status: 404, message: "Session not found" };
       }
+
+      // Atomic conditional update (prevents double-book)
+      const updated = await tx.session.updateMany({
+        where: { sessionId, status: "available" },
+        data: {
+          status: "booked",
+          sessionName: studentId,
+          caseId: latestCase.caseId,
+          // moodScale: (cannot copy from Case; Case has no moodScale in your schema)
+        },
+      });
+
+      if (updated.count !== 1) {
+        return { ok: false as const, status: 409, message: "Session already booked" };
+      }
+
+      await tx.sessionHistory.create({
+        data: {
+          sessionId,
+          action: "BOOKING_REQUEST",
+          details: JSON.stringify({
+            studentId,
+            phone,
+            description: description ?? "",
+            googleEventId: googleEventId ?? null,
+            bookedAt: new Date().toISOString(),
+          }),
+          editedBy: user.userId,
+        },
+      });
+
+      const roomName = session.room?.roomName ?? `Room ${session.roomId ?? ""}`;
+      const timeStr = formatTimeHHmmBangkok(session.timeStart);
 
       return {
-        id: booking.caseId.toString(),
-        caseId: booking.caseId,
-        date: sessionTime.toLocaleDateString('th-TH', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric'
-        }),
-        time: sessionTime.toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false
-        }),
-        counselor: formatCounselorDisplayName(session),
-        status,
-        notes: 'General counseling session',
-        sessionId: session.sessionId,
-        sessionName: session.sessionName,
-        location: session.room?.roomName || 'N/A'
+        ok: true as const,
+        roomName,
+        counselorEmail: session.counselor?.user?.cmuAccount ?? null,
+        timeStartISO: session.timeStart.toISOString(),
+        timeHHmm: timeStr,
+        caseId: latestCase.caseId,
       };
-    }).filter(Boolean); // Remove null entries
+    });
 
-    res.status(200).json({
-      success: true,
-      data: appointments,
-      hasExistingBooking: appointments.some((appointment: any) => appointment.status === 'upcoming')
+    if (!txResult.ok) {
+      return res.status(txResult.status).json({ message: txResult.message });
+    }
+
+    // Email client confirmation (from CMU account via SMTP)
+    const mailer = buildMailer();
+    if (mailer) {
+      const from = process.env.MAIL_FROM ?? process.env.SMTP_USER!;
+      const to = cmuAccount.includes("@") ? cmuAccount : `${cmuAccount}@cmu.ac.th`;
+
+      const subject = "ยืนยันคำขอจองคิวรับคำปรึกษา (Entaneer Mind)";
+      const text = [
+        `เราได้รับคำขอจองคิวของคุณแล้ว`,
+        ``,
+        `ห้อง/ผู้ให้คำปรึกษา: ${txResult.roomName}`,
+        `เวลา: ${txResult.timeHHmm} น.`,
+        `Case ID: ${txResult.caseId}`,
+        ``,
+        `หมายเหตุ: ระบบจะอัปเดตสถานะเมื่อผู้ให้คำปรึกษายืนยัน`,
+      ].join("\n");
+
+      // Don't fail booking if mail fails
+      mailer.sendMail({ from, to, subject, text }).catch((e: unknown) => {
+        console.error("Mail error:", e);
+      });
+    }
+
+    return res.json({
+      message: "Booked successfully",
+      caseId: txResult.caseId,
+      timeStart: txResult.timeStartISO,
     });
-  } catch (error) {
-    console.error('Error getting client bookings:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to retrieve booking history'
-    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Booking failed" });
   }
-};
-
-// Cancel booking (with 24-hour validation)
-export const cancelBooking = async (req: AuthRequest, res: Response) => {
-  try {
-    const body = (req as Request).body as { sessionId?: number | string };
-    const sessionId = Number(body?.sessionId);
-    const client = req.client; // Pre-populated by middleware
-
-    if (!Number.isInteger(sessionId) || sessionId <= 0 || !client) {
-      return res.status(400).json({
-        success: false,
-        message: 'Session ID and client authentication required'
-      });
-    }
-
-    // Get the session
-    const session = await prisma.session.findUnique({
-      where: { sessionId },
-      include: {
-        case: true
-      }
-    });
-
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        message: 'Session not found'
-      });
-    }
-
-    // Check if this booking belongs to the authenticated client
-    if (!session.case || session.case.clientId !== client.clientId) {
-      return res.status(403).json({
-        success: false,
-        message: 'You can only cancel your own bookings'
-      });
-    }
-
-    // Check 24-hour rule
-    if (!session.timeStart) {
-      return res.status(400).json({
-        success: false,
-        message: 'Session does not have a valid start time'
-      });
-    }
-
-    const sessionTime = new Date(session.timeStart);
-    const now = new Date();
-    const hoursUntilSession = (sessionTime.getTime() - now.getTime()) / (1000 * 60 * 60);
-
-    if (hoursUntilSession < 24) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot cancel bookings less than 24 hours before the session'
-      });
-    }
-
-    // Use transaction to prevent race conditions
-    await prisma.$transaction(async (tx: any) => {
-      // Update case status
-      await tx.case.update({
-        where: { caseId: session.case!.caseId },
-        data: { status: 'cancelled' }
-      });
-
-      // Update session back to available
-      await tx.session.update({
-        where: { sessionId },
-        data: {
-          status: 'available',
-          caseId: null
-        }
-      });
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Booking cancelled successfully',
-      data: { sessionId }
-    });
-  } catch (error) {
-    console.error('Error cancelling booking:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to cancel booking'
-    });
-  }
-};
+}

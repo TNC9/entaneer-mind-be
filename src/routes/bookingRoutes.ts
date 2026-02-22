@@ -1,26 +1,13 @@
-import { Router } from 'express';
-import {
-  searchSlots,
-  bookSlot,
-  getClientBookings,
-  cancelBooking,
-  getCounselorTodayAppointments
-} from '../controllers/bookingController';
-import { authenticateToken, requireClient } from '../middleware/authMiddleware';
-import { validateBookingRequest, validateCancellationRequest, validateDateQuery } from '../middleware/validationMiddleware';
+import { Router } from "express";
+import { listCounselors, listSessions, bookSession } from "../controllers/bookingController";
+import { authenticateToken, requireClient } from "../middleware/authMiddleware"; 
+// ^ adjust path/name to your actual middleware file
 
 const router = Router();
 
-// Frontend booking contract routes (/api/appointments/*)
-router.get('/counselor/today', validateDateQuery, getCounselorTodayAppointments);
-router.post('/book', authenticateToken, requireClient, validateBookingRequest, bookSlot);
-router.get('/my', authenticateToken, requireClient, getClientBookings);
-
-// Optional helpers/legacy aliases
-router.get('/slots', validateDateQuery, searchSlots);
-router.post('/cancel', authenticateToken, requireClient, validateCancellationRequest, cancelBooking);
-router.post('/bookings', authenticateToken, requireClient, validateBookingRequest, bookSlot);
-router.get('/client/bookings', authenticateToken, requireClient, getClientBookings);
-router.post('/bookings/cancel', authenticateToken, requireClient, validateCancellationRequest, cancelBooking);
+// Client should be the one booking
+router.get("/counselors", authenticateToken, requireClient, listCounselors);
+router.get("/sessions", authenticateToken, requireClient, listSessions);
+router.post("/book", authenticateToken, requireClient, bookSession);
 
 export default router;

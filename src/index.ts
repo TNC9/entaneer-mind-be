@@ -1,43 +1,76 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
-// --- Import Controllers ---
+// --- Controllers ---
 import { cmuCallback } from "./controllers/authController";
 
-// --- Import Routes ---
+// --- Routes ---
 import authRoutes from "./routes/authRoutes";
-import userRoutes from './routes/userRoutes';
-import caseRoutes from './routes/caseRoutes';
-import bookingRoutes from './routes/bookingRoutes';
-import clientProfileRoutes from './routes/clientProfileRoutes';
+import userRoutes from "./routes/userRoutes";
+import caseRoutes from "./routes/caseRoutes";
+import bookingRoutes from "./routes/bookingRoutes";
+import clientProfileRoutes from "./routes/clientProfileRoutes";
+import problemTagRoutes from "./routes/problemTagRoutes";
+import sessionRoutes from "./routes/sessionRoutes";
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT ?? 3000);
 
-// --- Middleware ---
-app.use(cors());
+// ✅ CORS: allow your frontend origin (3001) and common dev origins
+const allowedOrigins = [
+  "http://localhost:3001",
+  "http://127.0.0.1:3001",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // allow requests without origin (Postman, curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-cmu-account"],
+};
+
+// ✅ IMPORTANT: CORS must be before routes
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
 app.use(express.json());
 
 // --- API Routes ---
 app.use("/api/auth", authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/cases', caseRoutes);
-app.use('/api/appointments', bookingRoutes);
-app.use('/api/sessions', bookingRoutes);
-app.use('/api', bookingRoutes);
-app.use('/api/client', clientProfileRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/cases", caseRoutes);
+
+// ✅ Booking routes should be /api/bookings (matches frontend)
+app.use("/api/bookings", bookingRoutes);
+
+app.use("/api/sessions", sessionRoutes);
+app.use("/api/client", clientProfileRoutes);
+app.use("/api/problem-tags", problemTagRoutes);
 
 // --- Special Routes / Callbacks ---
 app.get("/cmuEntraIDCallback", cmuCallback);
 
-app.get("/", (req: Request, res: Response) => {
+// --- Health Check ---
+app.get("/", (_req: Request, res: Response) => {
   res.send("Entaneer Mind Backend is Running! 🚀");
 });
 
-// --- Server Start ---
+// ✅ Generic error handler (last)
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({ message: "Internal server error" });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });
