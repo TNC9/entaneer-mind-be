@@ -1,14 +1,18 @@
 import { Router } from "express";
+import { authenticateToken, requireCounselor } from "../middleware/authMiddleware";
 import {
-  getProblemTags,
-  createProblemTag
+  listProblemTags,
+  createProblemTag,
+  deleteProblemTag,
 } from "../controllers/problemTagController";
-
-import { authenticateToken } from "../middleware/authMiddleware";
 
 const router = Router();
 
-router.get("/", authenticateToken, getProblemTags);
-router.post("/", authenticateToken, createProblemTag);
+// anyone logged-in can read tags
+router.get("/", authenticateToken, listProblemTags);
+
+// counselor only: add/delete tags
+router.post("/", authenticateToken, requireCounselor, createProblemTag);
+router.delete("/:id", authenticateToken, requireCounselor, deleteProblemTag);
 
 export default router;

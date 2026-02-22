@@ -1,37 +1,74 @@
 import { Request, Response } from "express";
 import { prisma } from "../prisma";
+import type { AuthRequest } from "../middleware/authMiddleware";
 
 /**
  * GET /api/problem-tags
+ * Return only active tags
  */
-export const getProblemTags = async (req: Request, res: Response) => {
+export async function listProblemTags(_req: Request, res: Response) {
   try {
     const tags = await prisma.problemTag.findMany({
       where: { isActive: true },
-      orderBy: { label: "asc" }
+      orderBy: { label: "asc" },
+      select: { id: true, label: true, isActive: true },
     });
-    res.json(tags);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch problem tags" });
+    return res.json(tags);
+  } catch (err) {
+    console.error("listProblemTags error:", err);
+    return res.status(500).json({ message: "Failed to load problem tags" });
   }
-};
+}
 
 /**
  * POST /api/problem-tags
+ * Body: { label: string }
+ * Create new tag or reactivate existing
  */
-export const createProblemTag = async (req: Request, res: Response) => {
-  const { label } = req.body;
-
-  if (!label) {
-    return res.status(400).json({ error: "Label is required" });
-  }
-
+export async function createProblemTag(req: AuthRequest, res: Response) {
   try {
-    const tag = await prisma.problemTag.create({
-      data: { label }
+    const labelRaw = String(req.body?.label ?? "").trim();
+    if (!labelRaw) return res.status(400).json({ message: "label is required" });
+
+    const existing = await prisma.problemTag.findUnique({ where: { label: labelRaw } });
+    if (existing) {
+      const updated = await prisma.problemTag.update({
+        where: { id: existing.id },
+        data: { isActive: true },
+        select: { id: true, label: true, isActive: true },
+      });
+      return res.json(updated);
+    }
+
+    const created = await prisma.problemTag.create({
+      data: { label: labelRaw, isActive: true },
+      select: { id: true, label: true, isActive: true },
     });
-    res.status(201).json(tag);
-  } catch (error) {
-    res.status(400).json({ error: "Tag already exists" });
+
+    return res.status(201).json(created);
+  } catch (err) {
+    console.error("createProblemTag error:", err);
+    return res.status(500).json({ message: "Failed to create tag" });
   }
-};
+}
+
+/**
+ * DELETE /api/problem-tags/:id
+ * Soft delete (isActive=false)
+ */
+export async function deleteProblemTag(req: AuthRequest, res: Response) {
+  try {
+    const id = Number(req.params.id);
+    if (!id || Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+    await prisma.problemTag.update({
+      where: { id },
+      data: { isActive: false },
+    });
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("deleteProblemTag error:", err);
+    return res.status(500).json({ message: "Failed to delete tag" });
+  }
+}

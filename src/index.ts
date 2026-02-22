@@ -13,7 +13,7 @@ import bookingRoutes from "./routes/bookingRoutes";
 import clientProfileRoutes from "./routes/clientProfileRoutes";
 import problemTagRoutes from "./routes/problemTagRoutes";
 import sessionRoutes from "./routes/sessionRoutes";
-
+import sessionPortalRoutes from "./routes/sessionPortalRoutes";
 dotenv.config();
 
 const app = express();
@@ -53,6 +53,7 @@ app.use("/api/cases", caseRoutes);
 // ✅ Booking routes should be /api/bookings (matches frontend)
 app.use("/api/bookings", bookingRoutes);
 
+app.use("/api/session-portal", sessionPortalRoutes);
 app.use("/api/sessions", sessionRoutes);
 app.use("/api/client", clientProfileRoutes);
 app.use("/api/problem-tags", problemTagRoutes);
