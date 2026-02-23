@@ -329,7 +329,6 @@ async function getOrGenerateQueueToken(caseId: number, tx: any) {
 
   const now = new Date();
   let thaiYear = now.getFullYear() + 543;
-  if (now.getMonth() < 5) thaiYear -= 1;
   const yearPrefix = thaiYear.toString().slice(-2);
 
   const lastCase = await tx.case.findFirst({
