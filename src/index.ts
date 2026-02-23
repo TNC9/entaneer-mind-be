@@ -2,18 +2,20 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
-// --- Controllers ---
+// --- Import Controllers ---
 import { cmuCallback } from "./controllers/authController";
 
-// --- Routes ---
+// --- Import Routes ---
 import authRoutes from "./routes/authRoutes";
 import userRoutes from "./routes/userRoutes";
 import caseRoutes from "./routes/caseRoutes";
 import bookingRoutes from "./routes/bookingRoutes";
 import clientProfileRoutes from "./routes/clientProfileRoutes";
+import counselorRoutes from './routes/counselorRoutes';
 import problemTagRoutes from "./routes/problemTagRoutes";
 import sessionRoutes from "./routes/sessionRoutes";
 import sessionPortalRoutes from "./routes/sessionPortalRoutes";
+
 dotenv.config();
 
 const app = express();
@@ -45,20 +47,27 @@ app.options("*", cors(corsOptions));
 
 app.use(express.json());
 
-// --- API Routes ---
+// ==========================================
+//                 API Routes
+// ==========================================
+// 1. ฝั่งผู้ใช้งานทั่วไป & Auth
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/cases", caseRoutes);
+app.use("/api/client", clientProfileRoutes);
 
-// ✅ Booking routes should be /api/bookings (matches frontend)
+// 2. ฝั่ง Booking / Room / Session
 app.use("/api/bookings", bookingRoutes);
-
 app.use("/api/session-portal", sessionPortalRoutes);
 app.use("/api/sessions", sessionRoutes);
-app.use("/api/client", clientProfileRoutes);
 app.use("/api/problem-tags", problemTagRoutes);
 
-// --- Special Routes / Callbacks ---
+// 3. ฝั่ง Counselor & Reports
+app.use(counselorRoutes);
+
+// ==========================================
+//         Special Routes / Callbacks
+// ==========================================
 app.get("/cmuEntraIDCallback", cmuCallback);
 
 // --- Health Check ---
@@ -72,6 +81,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ message: "Internal server error" });
 });
 
+// --- Server Start ---
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });

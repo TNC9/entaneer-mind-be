@@ -33,13 +33,6 @@ function formatTimeHHmm(d: Date | null): string {
   return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-/** CASE-66-001 from sessionName + sessionId */
-function buildCaseCode(sessionName: string | null, sessionId: number) {
-  const yy = (sessionName ?? "").slice(0, 2) || "00";
-  const num = String(sessionId).padStart(3, "0");
-  return `CASE-${yy}-${num}`;
-}
-
 /** Pull client's booking text from CLIENT_BOOKED history */
 async function getClientBookingText(sessionId: number) {
   const h = await prisma.sessionHistory.findFirst({
@@ -214,7 +207,7 @@ export async function counselorRecords(req: AuthRequest, res: Response) {
           ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
           : "";
 
-        const caseCode = buildCaseCode(studentId, s.sessionId);
+        const caseCode = s.sessionToken || "N/A";
         const clientText = await getClientBookingText(s.sessionId);
 
         return {
@@ -281,7 +274,7 @@ export async function getCaseNote(req: AuthRequest, res: Response) {
       ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
       : "";
 
-    const caseCode = buildCaseCode(studentId, s.sessionId);
+    const caseCode = s.sessionToken || "N/A";;
     const clientText = await getClientBookingText(s.sessionId);
 
     return res.json({
@@ -425,33 +418,23 @@ export async function updateCaseNote(req: AuthRequest, res: Response) {
 }
 
 // GET /api/sessions/case-note/by-code/:caseCode
-// GET /api/sessions/case-note/by-code/:caseCode
 export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
   try {
     const counselorId = req.user?.counselorId;
     if (!counselorId) return res.status(401).json({ message: "Unauthorized" });
 
-    const code = String(req.params.caseCode || "").trim().toUpperCase();
-    const m = code.match(/^CASE-(\d{2})-(\d{3})$/);
-    if (!m) return res.status(400).json({ message: "Invalid caseCode format (CASE-66-001)" });
+    const code = String(req.params.caseCode || "").trim(); // เช่น "690001-001"
 
-    const yy = m[1];                 // first 2 digits (66)
-    const sessionId = Number(m[2]);  // 001 -> 1
-    if (!sessionId || Number.isNaN(sessionId)) {
-      return res.status(400).json({ message: "Invalid sessionId" });
-    }
-
+    // ค้นหาจาก sessionToken ตรงๆ ได้เลย!
     const s = await prisma.session.findUnique({
-      where: { sessionId },
+      where: { sessionToken: code }, 
       include: {
         room: true,
         problemTags: { where: { isActive: true }, select: { id: true, label: true } },
         case: {
           include: {
             client: {
-              include: {
-                user: { select: { firstName: true, lastName: true, isConsentAccepted: true } },
-              },
+              include: { user: { select: { firstName: true, lastName: true, isConsentAccepted: true } } },
             },
           },
         },
@@ -461,20 +444,8 @@ export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
     if (!s) return res.status(404).json({ message: "Session not found" });
     if (s.counselorId !== counselorId) return res.status(403).json({ message: "Forbidden" });
 
-    // studentId is from sessionName (booked) OR from case clientId
     const studentId = s.sessionName ?? s.case?.client?.clientId ?? "";
-
-    /**
-     * ✅ IMPORTANT FIX:
-     * Only check prefix when studentId exists.
-     * If sessionName/case not assigned yet, allow lookup (so counselor can write notes later).
-     */
-    if (studentId && !studentId.startsWith(yy)) {
-      return res.status(404).json({ message: "Case code does not match this session" });
-    }
-
     const clientText = await getClientBookingText(s.sessionId);
-
     const timeStart = s.timeStart ? new Date(s.timeStart) : null;
     const sessionDate = timeStart ? timeStart.toISOString().split("T")[0] : "";
     const sessionTime = timeStart
@@ -488,7 +459,7 @@ export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
     return res.json({
       id: String(s.sessionId),
       sessionId: s.sessionId,
-      caseCode: code,
+      caseCode: s.sessionToken,
       studentId,
       studentName,
       department: s.case?.client?.department ?? "",

@@ -234,6 +234,13 @@ export async function bookSession(req: AuthRequest, res: Response) {
         return { ok: false as const, status: 404, message: "Session not found" };
       }
 
+      //  --- รันเลข Token --- 
+      const caseToken = await getOrGenerateQueueToken(latestCase.caseId, tx);
+      const sessionCount = await tx.session.count({
+        where: { caseId: latestCase.caseId }
+      });
+      const sessionToken = `${caseToken}-${(sessionCount + 1).toString().padStart(3, "0")}`;
+
       // Atomic conditional update to prevent double booking
       const updated = await tx.session.updateMany({
         where: { sessionId, status: "available" },
@@ -241,6 +248,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
           status: "booked",
           sessionName: studentId,
           caseId: latestCase.caseId,
+          sessionToken: sessionToken,
         },
       });
 
@@ -313,4 +321,32 @@ export async function bookSession(req: AuthRequest, res: Response) {
     console.error("bookSession error:", err);
     return res.status(500).json({ message: "Booking failed" });
   }
+}
+
+async function getOrGenerateQueueToken(caseId: number, tx: any) {
+  const currentCase = await tx.case.findUnique({ where: { caseId } });
+  if (currentCase.queueToken) return currentCase.queueToken;
+
+  const now = new Date();
+  let thaiYear = now.getFullYear() + 543;
+  if (now.getMonth() < 5) thaiYear -= 1;
+  const yearPrefix = thaiYear.toString().slice(-2);
+
+  const lastCase = await tx.case.findFirst({
+    where: { queueToken: { startsWith: yearPrefix } },
+    orderBy: { queueToken: 'desc' },
+  });
+
+  let nextNumber = 1;
+  if (lastCase && lastCase.queueToken) {
+    const lastNumber = parseInt(lastCase.queueToken.slice(2), 10);
+    nextNumber = lastNumber + 1;
+  }
+  const newToken = `${yearPrefix}${nextNumber.toString().padStart(4, '0')}`;
+
+  await tx.case.update({
+    where: { caseId },
+    data: { queueToken: newToken },
+  });
+  return newToken;
 }

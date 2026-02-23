@@ -45,12 +45,6 @@ function weekRange(weekStartYYYYMMDD: string) {
   return { start, end };
 }
 
-function caseCodeFromSession(sessionName: string | null, sessionId: number) {
-  const yy = (sessionName ?? "").slice(0, 2) || "00";
-  const num = String(sessionId).padStart(3, "0");
-  return `CASE-${yy}-${num}`;
-}
-
 /* =========================================================
    ROOMS
    ========================================================= */
@@ -172,7 +166,7 @@ export async function getWeekSchedule(req: AuthRequest, res: Response) {
           available: (s.status || "").toLowerCase() === "available" || isBooked,
           status: s.status,
           bookedBy: isBooked ? studentName : undefined,
-          caseCode: isBooked ? caseCodeFromSession(s.sessionName ?? null, s.sessionId) : undefined,
+          caseCode: isBooked ? s.sessionToken : undefined,
         };
       });
 

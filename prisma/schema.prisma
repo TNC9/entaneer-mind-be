@@ -16,11 +16,13 @@ model User {
   roleName          String
   gender            String?
   createdAt         DateTime  @default(now())
-  isConsentAccepted Boolean   @default(false) 
+  isConsentAccepted Boolean   @default(false)
   consentAcceptedAt DateTime?
-  
-  clientProfile     Client?
-  counselorProfile  Counselor?
+
+  clientProfile    Client?
+  counselorProfile Counselor?
+
+  editedHistories SessionHistory[] @relation("UserEditHistory")
 }
 
 model RegistrationCode {
@@ -32,16 +34,16 @@ model RegistrationCode {
 }
 
 model Client {
-  userId      Int     @id
-  user        User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
-  clientId    String  @unique
-  major       String?
-  department  String?
-  cases       Case[]
+  userId     Int     @id
+  user       User    @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  clientId   String  @unique
+  major      String?
+  department String?
+  cases      Case[]
 }
 
 model Counselor {
-  userId          Int       @id 
+  userId          Int       @id
   user            User      @relation(fields: [userId], references: [userId], onDelete: Cascade)
   counselorNumber String?
   cases           Case[]
@@ -49,71 +51,73 @@ model Counselor {
 }
 
 model Room {
-  roomId    Int       @id @default(autoincrement())
-  roomName  String    @unique
-  isActive  Boolean   @default(true)
-  sessions  Session[]
+  roomId   Int       @id @default(autoincrement())
+  roomName String    @unique
+  isActive Boolean   @default(true)
+  sessions Session[]
 }
 
 model ProblemTag {
-  id        Int       @id @default(autoincrement())
-  label     String    @unique
-  isActive  Boolean   @default(true)
-  sessions  Session[]
+  id       Int       @id @default(autoincrement())
+  label    String    @unique
+  isActive Boolean   @default(true)
+  sessions Session[]
 }
 
 model Case {
-  caseId           Int       @id @default(autoincrement())
-  status           String    @default("waiting_confirmation")
-  queueToken       String?   @unique
-  priority         String    @default("medium")
-  
+  caseId     Int     @id @default(autoincrement())
+  status     String  @default("waiting_confirmation")
+  queueToken String? @unique
+  priority   String  @default("medium")
+
   waitingEnteredAt DateTime?
-  homeEnteredAt    DateTime? 
-  
-  createdAt        DateTime  @default(now())
-  confirmedAt      DateTime?
-  
-  clientId         String
-  client           Client   @relation(fields: [clientId], references: [clientId])
-  counselorId      Int?
-  counselor        Counselor? @relation(fields: [counselorId], references: [userId])
-  
-  sessions         Session[]
+  homeEnteredAt    DateTime?
+
+  createdAt   DateTime  @default(now())
+  confirmedAt DateTime?
+
+  clientId    String
+  client      Client     @relation(fields: [clientId], references: [clientId])
+  counselorId Int?
+  counselor   Counselor? @relation(fields: [counselorId], references: [userId])
+
+  sessions Session[]
 }
 
 model Session {
-  sessionId         Int       @id @default(autoincrement())
-  sessionName       String?
-  timeStart         DateTime?
-  timeEnd           DateTime?
-  
-  roomId            Int?
-  room              Room?     @relation(fields: [roomId], references: [roomId]) 
-  
-  status            String    @default("available")
-  createdAt         DateTime  @default(now())
-  
-  caseId            Int?
-  case              Case?     @relation(fields: [caseId], references: [caseId])
-  counselorId       Int?
-  counselor         Counselor? @relation(fields: [counselorId], references: [userId])
-  
-  counselorKeyword  String?   @db.Text
-  counselorNote     String?   @db.Text
-  counselorFollowup String?   @db.Text
+  sessionId    Int       @id @default(autoincrement())
+  sessionToken String?   @unique
+  sessionName  String?
+  timeStart    DateTime?
+  timeEnd      DateTime?
+
+  roomId Int?
+  room   Room? @relation(fields: [roomId], references: [roomId])
+
+  status    String   @default("available")
+  createdAt DateTime @default(now())
+
+  caseId      Int?
+  case        Case?      @relation(fields: [caseId], references: [caseId])
+  counselorId Int?
+  counselor   Counselor? @relation(fields: [counselorId], references: [userId])
+
+  counselorKeyword  String? @db.Text
+  counselorNote     String? @db.Text
+  counselorFollowup String? @db.Text
   moodScale         Int?
-  
-  problemTags       ProblemTag[]
-  histories         SessionHistory[] 
+
+  problemTags ProblemTag[]
+  histories   SessionHistory[]
 }
 
 model SessionHistory {
-  id          Int      @id @default(autoincrement())
-  sessionId   Int      
-  session     Session  @relation(fields: [sessionId], references: [sessionId])
-  action      String   
-  details     String?  @db.Text
-  editedBy    Int      
-  timestamp   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  sessionId Int
+  session   Session  @relation(fields: [sessionId], references: [sessionId])
+  action    String
+  details   String?  @db.Text
+  editedBy  Int
+  editor    User     @relation("UserEditHistory", fields: [editedBy], references: [userId])
+  timestamp DateTime @default(now())
 }
