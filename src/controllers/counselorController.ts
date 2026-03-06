@@ -1292,12 +1292,15 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * Get list of queue tokens
+ * Get list of registration tokens from RegistrationCode table.
+ * Returns records shaped to match the frontend allToken interface:
+ *   { id, token, isUsed, usedAt?, createdAt }
+ * Sorting is handled client-side; the backend returns all records ordered
+ * by code ascending as a stable default.
  */
 export const getTokenList = async (req: AuthRequest, res: Response) => {
   try {
     const counselorUserId = req.user?.userId;
-    const { sort = 'asc' } = req.query;
 
     // Validate counselor role
     const counselor = await prisma.user.findUnique({
@@ -1311,106 +1314,26 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Validate sort
-    if (sort !== 'asc' && sort !== 'desc') {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid sort parameter. Use "asc" or "desc".'
-      });
-    }
-
-    // Fetch cases with tokens
-    const casesWithTokens = await prisma.case.findMany({
-      where: {
-        queueToken: { not: null }
-      },
-      include: {
-        client: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true,
-                cmuAccount: true,
-                phoneNum: true
-              }
-            }
-          }
-        },
-        counselor: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true
-              }
-            }
-          }
-        },
-        sessions: {
-          select: {
-            sessionId: true,
-            status: true,
-            timeStart: true
-          }
-        }
-      },
-      orderBy: {
-        queueToken: sort as 'asc' | 'desc'
-      }
+    // Fetch all registration codes
+    const registrationCodes = await prisma.registrationCode.findMany({
+      orderBy: { code: 'asc' }
     });
 
-    // Format response
-    const formattedTokens = casesWithTokens.map(caseItem => ({
-      caseId: caseItem.caseId,
-      queueToken: caseItem.queueToken,
-      status: caseItem.status,
-      priority: caseItem.priority,
-      createdAt: caseItem.createdAt,
-      confirmedAt: caseItem.confirmedAt,
-      waitingEnteredAt: caseItem.waitingEnteredAt,
-      homeEnteredAt: caseItem.homeEnteredAt,
-      client: {
-        clientId: caseItem.client.clientId,
-        name: `${caseItem.client.user.firstName} ${caseItem.client.user.lastName}`,
-        cmuAccount: caseItem.client.user.cmuAccount,
-        phoneNum: caseItem.client.user.phoneNum,
-        major: caseItem.client.major,
-        department: caseItem.client.department
-      },
-      counselor: caseItem.counselor ? {
-        counselorId: caseItem.counselor.userId,
-        name: `${caseItem.counselor.user.firstName} ${caseItem.counselor.user.lastName}`
-      } : null,
-      sessionCount: caseItem.sessions.length,
-      upcomingSessions: caseItem.sessions.filter(s => 
-        s.status === 'booked' && s.timeStart && s.timeStart > new Date()
-      ).length
+    // Map RegistrationCode fields → frontend allToken shape
+    const tokens = registrationCodes.map(rc => ({
+      id: rc.id,
+      token: rc.code,
+      isUsed: rc.isUsed,
+      usedAt: rc.usedAt ?? undefined,
+      //createdAt: rc.createdAt ?? new Date()
     }));
-
-    // Stats
-    const stats = {
-      total: casesWithTokens.length,
-      byStatus: {
-        waiting_confirmation: casesWithTokens.filter(c => c.status === 'waiting_confirmation').length,
-        confirmed: casesWithTokens.filter(c => c.status === 'confirmed').length,
-        in_progress: casesWithTokens.filter(c => c.status === 'in_progress').length,
-        completed: casesWithTokens.filter(c => c.status === 'completed').length
-      },
-      byPriority: {
-        high: casesWithTokens.filter(c => c.priority === 'high').length,
-        medium: casesWithTokens.filter(c => c.priority === 'medium').length,
-        low: casesWithTokens.filter(c => c.priority === 'low').length
-      }
-    };
 
     res.status(200).json({
       success: true,
-      message: 'Queue tokens retrieved successfully',
+      message: 'Registration tokens retrieved successfully',
       data: {
-        sortOrder: sort,
-        stats,
-        tokens: formattedTokens
+        total: tokens.length,
+        tokens
       }
     });
 
