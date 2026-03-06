@@ -1182,7 +1182,35 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
         }
       })
     ]);
+    // Average wait days: difference between confirmedAt and createdAt for confirmed/completed cases
+    const casesWithWait = cases.filter(c => c.confirmedAt && c.createdAt);
+    const averageWaitDays = casesWithWait.length > 0
+      ? Math.round(
+          casesWithWait.reduce((sum, c) => {
+            const diff = new Date(c.confirmedAt!).getTime() - new Date(c.createdAt).getTime();
+            return sum + diff / (1000 * 60 * 60 * 24);
+          }, 0) / casesWithWait.length
+        )
+      : 0;
 
+    const departmentCounts: Record<string, number> = {};
+    cases.forEach(c => {
+      const dept = c.client.department || 'อื่นๆ';
+      departmentCounts[dept] = (departmentCounts[dept] || 0) + 1;
+    });
+    const byDepartment = Object.entries(departmentCounts)
+      .sort(([, a], [, b]) => b - a)
+      .map(([department, count]) => ({ department, count }));    
+
+    const monthlyMap: Record<string, number> = {};
+    sessions.forEach(s => {
+      const d = new Date(s.createdAt);
+      const key = d.toLocaleDateString('th-TH', { month: 'short' });
+      monthlyMap[key] = (monthlyMap[key] || 0) + 1;
+    });
+    const monthlySessions = Object.entries(monthlyMap)
+      .map(([month, count]) => ({ month, count }));      
+      
     // Calculate stats
     const caseStats = {
       total: cases.length,
@@ -1268,15 +1296,21 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
       success: true,
       message: 'Report generated successfully',
       data: {
-        reportPeriod: {
-          startDate: start.toISOString(),
-          endDate: end.toISOString()
+        period: {
+          from: start.toISOString(),
+          to: end.toISOString()
         },
-        caseStats,
-        sessionStats,
-        userStats,
-        topProblemTags,
-        counselorStats,
+        summary: {
+          totalSessions: sessionStats.total,
+          completedSessions: sessionStats.byStatus.completed,
+          cancelledSessions: sessionStats.byStatus.cancelled,
+          newClients: userStats.byRole.client,
+          averageWaitDays
+        },
+        topTags: topProblemTags.map(t => ({ tag: t.label, count: t.count })),
+        byDepartment,
+        counselorWorkload: counselorStats.map(c => ({ name: c.name, sessions: c.sessionsCompleted })),
+        monthlySessions,
         generatedAt: new Date().toISOString()
       }
     });
@@ -1292,12 +1326,15 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * Get list of queue tokens
+ * Get list of registration tokens from RegistrationCode table.
+ * Returns records shaped to match the frontend allToken interface:
+ *   { id, token, isUsed, usedAt?, createdAt }
+ * Sorting is handled client-side; the backend returns all records ordered
+ * by code ascending as a stable default.
  */
 export const getTokenList = async (req: AuthRequest, res: Response) => {
   try {
     const counselorUserId = req.user?.userId;
-    const { sort = 'asc' } = req.query;
 
     // Validate counselor role
     const counselor = await prisma.user.findUnique({
@@ -1311,106 +1348,26 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Validate sort
-    if (sort !== 'asc' && sort !== 'desc') {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid sort parameter. Use "asc" or "desc".'
-      });
-    }
-
-    // Fetch cases with tokens
-    const casesWithTokens = await prisma.case.findMany({
-      where: {
-        queueToken: { not: null }
-      },
-      include: {
-        client: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true,
-                cmuAccount: true,
-                phoneNum: true
-              }
-            }
-          }
-        },
-        counselor: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true
-              }
-            }
-          }
-        },
-        sessions: {
-          select: {
-            sessionId: true,
-            status: true,
-            timeStart: true
-          }
-        }
-      },
-      orderBy: {
-        queueToken: sort as 'asc' | 'desc'
-      }
+    // Fetch all registration codes
+    const registrationCodes = await prisma.registrationCode.findMany({
+      orderBy: { code: 'asc' }
     });
 
-    // Format response
-    const formattedTokens = casesWithTokens.map(caseItem => ({
-      caseId: caseItem.caseId,
-      queueToken: caseItem.queueToken,
-      status: caseItem.status,
-      priority: caseItem.priority,
-      createdAt: caseItem.createdAt,
-      confirmedAt: caseItem.confirmedAt,
-      waitingEnteredAt: caseItem.waitingEnteredAt,
-      homeEnteredAt: caseItem.homeEnteredAt,
-      client: {
-        clientId: caseItem.client.clientId,
-        name: `${caseItem.client.user.firstName} ${caseItem.client.user.lastName}`,
-        cmuAccount: caseItem.client.user.cmuAccount,
-        phoneNum: caseItem.client.user.phoneNum,
-        major: caseItem.client.major,
-        department: caseItem.client.department
-      },
-      counselor: caseItem.counselor ? {
-        counselorId: caseItem.counselor.userId,
-        name: `${caseItem.counselor.user.firstName} ${caseItem.counselor.user.lastName}`
-      } : null,
-      sessionCount: caseItem.sessions.length,
-      upcomingSessions: caseItem.sessions.filter(s => 
-        s.status === 'booked' && s.timeStart && s.timeStart > new Date()
-      ).length
+    // Map RegistrationCode fields → frontend allToken shape
+    const tokens = registrationCodes.map(rc => ({
+      id: rc.id,
+      token: rc.code,
+      isUsed: rc.isUsed,
+      usedAt: rc.usedAt ?? undefined,
+      //createdAt: rc.createdAt ?? new Date()
     }));
-
-    // Stats
-    const stats = {
-      total: casesWithTokens.length,
-      byStatus: {
-        waiting_confirmation: casesWithTokens.filter(c => c.status === 'waiting_confirmation').length,
-        confirmed: casesWithTokens.filter(c => c.status === 'confirmed').length,
-        in_progress: casesWithTokens.filter(c => c.status === 'in_progress').length,
-        completed: casesWithTokens.filter(c => c.status === 'completed').length
-      },
-      byPriority: {
-        high: casesWithTokens.filter(c => c.priority === 'high').length,
-        medium: casesWithTokens.filter(c => c.priority === 'medium').length,
-        low: casesWithTokens.filter(c => c.priority === 'low').length
-      }
-    };
 
     res.status(200).json({
       success: true,
-      message: 'Queue tokens retrieved successfully',
+      message: 'Registration tokens retrieved successfully',
       data: {
-        sortOrder: sort,
-        stats,
-        tokens: formattedTokens
+        total: tokens.length,
+        tokens
       }
     });
 
