@@ -48,13 +48,17 @@ model Counselor {
   counselorNumber String?
   cases           Case[]
   sessions        Session[]
+  rooms           Room[]
 }
 
 model Room {
-  roomId   Int       @id @default(autoincrement())
-  roomName String    @unique
-  isActive Boolean   @default(true)
-  sessions Session[]
+  roomId      Int     @id @default(autoincrement())
+  roomName    String  @unique
+  counselorId Int?
+  isActive    Boolean @default(true)
+
+  counselor Counselor? @relation(fields: [counselorId], references: [userId])
+  sessions  Session[]
 }
 
 model ProblemTag {
