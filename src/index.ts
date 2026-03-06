@@ -1,6 +1,9 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import cron from "node-cron";
+import { cleanupExpiredSessions } from "./services/sessionCleanup";
+
 
 // --- Import Controllers ---
 import { cmuCallback } from "./controllers/authController";
@@ -15,6 +18,7 @@ import counselorRoutes from './routes/counselorRoutes';
 import problemTagRoutes from "./routes/problemTagRoutes";
 import sessionRoutes from "./routes/sessionRoutes";
 import sessionPortalRoutes from "./routes/sessionPortalRoutes";
+import clientHomeRoutes from "./routes/clientHomeRoutes";
 
 dotenv.config();
 
@@ -55,6 +59,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/cases", caseRoutes);
 app.use("/api/client", clientProfileRoutes);
+app.use("/api/client-home", clientHomeRoutes);
 
 // 2. ฝั่ง Booking / Room / Session
 app.use("/api/bookings", bookingRoutes);
@@ -84,4 +89,16 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 // --- Server Start ---
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+});
+
+// Session Cleanup Cron Job: Runs Everyday at 00:05
+cron.schedule("5 0 * * *", async () => {
+  try {
+    const result = await cleanupExpiredSessions();
+    console.log("Scheduled session cleanup:", result);
+  } catch (error) {
+    console.error("Scheduled cleanup failed:", error);
+  }
+}, {
+  timezone: "Asia/Bangkok",
 });

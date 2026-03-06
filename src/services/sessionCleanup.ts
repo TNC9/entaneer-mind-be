@@ -1,19 +1,8 @@
-// src/services/sessionCleanup.service.ts
 import { prisma } from "../prisma";
 
-/**
- * Delete expired sessions based on SESSION DATE (timeStart), not createdAt.
- *
- * Rules:
- * - delete if session timeStart is before "today" (Bangkok timezone)
- * - only status = "available" or "closed"
- * - only unbooked sessions (caseId = null) for safety
- */
 export async function cleanupExpiredSessions() {
-  // Bangkok is UTC+7 (no DST)
   const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
 
-  // Convert "now" to Bangkok clock, then compute Bangkok midnight, then convert back to UTC Date
   const now = new Date();
   const bangkokNowMs = now.getTime() + BANGKOK_OFFSET_MS;
   const bangkokNow = new Date(bangkokNowMs);
@@ -27,7 +16,6 @@ export async function cleanupExpiredSessions() {
     ) - BANGKOK_OFFSET_MS
   );
 
-  // (Optional) Fetch IDs first so you can log which sessions were deleted
   const targets = await prisma.session.findMany({
     where: {
       timeStart: {
@@ -54,17 +42,31 @@ export async function cleanupExpiredSessions() {
     };
   }
 
-  const result = await prisma.session.deleteMany({
-    where: {
-      sessionId: {
-        in: targets.map((t) => t.sessionId),
+  const sessionIds = targets.map((t) => t.sessionId);
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.sessionHistory.deleteMany({
+      where: {
+        sessionId: {
+          in: sessionIds,
+        },
       },
-    },
+    });
+
+    const deletedSessions = await tx.session.deleteMany({
+      where: {
+        sessionId: {
+          in: sessionIds,
+        },
+      },
+    });
+
+    return deletedSessions;
   });
 
   return {
     deletedCount: result.count,
-    deletedSessionIds: targets.map((t) => t.sessionId),
+    deletedSessionIds: sessionIds,
     cutoffBangkokStartOfTodayUtc: bangkokStartOfTodayUtc.toISOString(),
   };
 }

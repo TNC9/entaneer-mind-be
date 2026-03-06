@@ -76,13 +76,14 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
 
     const cancelled = await prisma.sessionHistory.findMany({
       where: {
-        editedBy: userId,
-        action: "CLIENT_CANCELLED",
         sessionId: { in: sessionIds },
+        action: {
+      in: ["CLIENT_CANCELLED", "PORTAL_CANCELLED_BOOKING"],
       },
-      orderBy: { timestamp: "desc" },
-      select: { sessionId: true, timestamp: true },
-    });
+     },
+  orderBy: { timestamp: "desc" },
+  select: { sessionId: true, action: true, timestamp: true },
+});
 
     const cancelledSet = new Set<number>();
     for (const c of cancelled) cancelledSet.add(c.sessionId);
