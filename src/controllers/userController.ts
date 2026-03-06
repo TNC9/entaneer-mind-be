@@ -1,6 +1,40 @@
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { prisma } from '../prisma';
-import { AuthRequest } from '../middleware/authMiddleware'; 
+import { AuthRequest } from '../middleware/authMiddleware';
+
+// NEW
+export const listUsers = async (req: Request, res: Response) => {
+  try {
+    const role = String(req.query.role ?? '').trim();
+
+    const where = role
+      ? {
+          roleName: {
+            equals: role,
+            mode: 'insensitive' as const,
+          },
+        }
+      : undefined;
+
+    const users = await prisma.user.findMany({
+      where,
+      select: {
+        userId: true,
+        firstName: true,
+        lastName: true,
+        roleName: true,
+      },
+      orderBy: {
+        userId: 'asc',
+      },
+    });
+
+    return res.json({ users });
+  } catch (error) {
+    console.error('listUsers error:', error);
+    return res.status(500).json({ error: 'Failed to load users' });
+  }
+};
 
 // Get Current User Profile
 export const getMe = async (req: AuthRequest, res: Response) => {
@@ -8,78 +42,66 @@ export const getMe = async (req: AuthRequest, res: Response) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-        return res.status(401).json({ error: 'User ID not found in token' });
+      return res.status(401).json({ error: 'User ID not found in token' });
     }
 
-    // 1. ดึงข้อมูลแบบ Deep Include
     const user = await prisma.user.findUnique({
       where: { userId: userId },
       include: {
         clientProfile: {
           include: {
             cases: {
-              // แนบข้อมูล client และ User (ชื่อ-สกุล) มาใน Case ด้วย
               include: {
-                 client: {
-                    include: { user: true } 
-                 },
-                 sessions: {
-                    // ดึง Tags มาด้วย (เดี๋ยวเอาไปแปลงร่างข้างล่าง)
-                    include: { problemTags: true }
-                 }
+                client: {
+                  include: { user: true }
+                },
+                sessions: {
+                  include: { problemTags: true }
+                }
               }
-            } 
+            }
           }
-        },   
+        },
         counselorProfile: true,
       }
     });
 
     if (!user) return res.status(404).json({ message: 'User not found' });
-    
-    // 2. Logic เช็คสถานะ (Flow Status)
-    let flowStatus = 'normal'; 
+
+    let flowStatus = 'normal';
 
     if (user.roleName === 'client') {
-       if (!user.isConsentAccepted) {
-          flowStatus = 'require_consent';
-       }
-       else if (!user.clientProfile?.cases || user.clientProfile.cases.length === 0) {
-          flowStatus = 'require_token';
-       } 
-       else {
-          const cases = user.clientProfile.cases;
-          const isWaiting = cases.some((c: any) => c.status === 'waiting_confirmation');
-          
-          if (isWaiting) {
-             flowStatus = 'waiting_approval';
-          }
-       }
+      if (!user.isConsentAccepted) {
+        flowStatus = 'require_consent';
+      } else if (!user.clientProfile?.cases || user.clientProfile.cases.length === 0) {
+        flowStatus = 'require_token';
+      } else {
+        const cases = user.clientProfile.cases;
+        const isWaiting = cases.some((c: any) => c.status === 'waiting_confirmation');
+
+        if (isWaiting) {
+          flowStatus = 'waiting_approval';
+        }
+      }
     }
 
-    // 3. ส่วนแปลงร่างข้อมูล (Transform Data)
-    // แปลงจาก Database Structure -> Frontend Friendly Structure
     const safeUser = {
-        ...user,
-        clientProfile: user.clientProfile ? {
-            ...user.clientProfile,
-            cases: user.clientProfile.cases?.map((c: any) => ({
-                ...c,
-                // แปลง Session แต่ละอัน
-                sessions: c.sessions?.map((s: any) => ({
-                    ...s,
-                    // แปลงร่าง: ดึงแค่ label ออกมาใส่ Array
-                    // จาก [{label: "เครียด"}, {label: "การเรียน"}] -> ["เครียด", "การเรียน"]
-                    problemTags: s.problemTags?.map((t: any) => t.label) || []
-                })) || []
-            })) || []
-        } : null
+      ...user,
+      clientProfile: user.clientProfile ? {
+        ...user.clientProfile,
+        cases: user.clientProfile.cases?.map((c: any) => ({
+          ...c,
+          sessions: c.sessions?.map((s: any) => ({
+            ...s,
+            problemTags: s.problemTags?.map((t: any) => t.label) || []
+          })) || []
+        })) || []
+      } : null
     };
-    
-    // ส่งข้อมูลที่แปลงแล้ว (safeUser) พร้อม flowStatus กลับไปให้ Frontend
-    res.json({ 
-      ...safeUser, 
-      flowStatus 
+
+    res.json({
+      ...safeUser,
+      flowStatus
     });
 
   } catch (error) {
@@ -93,7 +115,7 @@ export const acceptConsent = async (req: AuthRequest, res: Response) => {
   try {
     await prisma.user.update({
       where: { userId },
-      data: { 
+      data: {
         isConsentAccepted: true,
         consentAcceptedAt: new Date()
       }

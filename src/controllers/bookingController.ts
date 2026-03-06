@@ -44,39 +44,36 @@ function buildMailer() {
 
 /**
  * GET /api/bookings/counselors
- * Return active rooms (roomId + roomName).
- * (counselorEmail is optional; we try to infer from sessions if available.)
+ * Return active rooms with assigned counselor name.
  */
 export async function listCounselors(_req: Request, res: Response) {
   try {
     const rooms = await prisma.room.findMany({
       where: { isActive: true },
       orderBy: { roomId: "asc" },
-    });
-
-    // Try to infer counselorEmail from any session in that room that has counselorId
-    const reps = await prisma.session.findMany({
-      where: {
-        roomId: { in: rooms.map((r) => r.roomId) },
-        counselorId: { not: null },
+      include: {
+        counselor: {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                cmuAccount: true,
+              },
+            },
+          },
+        },
       },
-      distinct: ["roomId"],
-      select: {
-        roomId: true,
-        counselor: { select: { user: { select: { cmuAccount: true } } } },
-      },
     });
-
-    const repMap = new Map<number, string | null>();
-    for (const r of reps) {
-      if (r.roomId != null) repMap.set(r.roomId, r.counselor?.user?.cmuAccount ?? null);
-    }
 
     return res.json(
       rooms.map((room) => ({
         roomId: room.roomId,
         roomName: room.roomName,
-        counselorEmail: repMap.get(room.roomId) ?? null,
+        counselorName: room.counselor?.user
+          ? `${room.counselor.user.firstName} ${room.counselor.user.lastName}`
+          : null,
+        counselorEmail: room.counselor?.user?.cmuAccount ?? null,
       }))
     );
   } catch (err) {
@@ -101,7 +98,23 @@ export async function listSessions(req: Request, res: Response) {
       return res.status(400).json({ message: "Invalid roomId" });
     }
 
-    const room = await prisma.room.findUnique({ where: { roomId } });
+    const room = await prisma.room.findUnique({
+      where: { roomId },
+      include: {
+        counselor: {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                cmuAccount: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
     if (!room || !room.isActive) {
       return res.status(404).json({ message: "Room not found" });
     }
@@ -119,6 +132,10 @@ export async function listSessions(req: Request, res: Response) {
       },
     });
 
+    const counselorName = room.counselor?.user
+      ? `${room.counselor.user.firstName} ${room.counselor.user.lastName}`
+      : null;
+
     const slots = sessions
       .filter((s) => !!s.timeStart)
       .map((s) => ({
@@ -126,14 +143,18 @@ export async function listSessions(req: Request, res: Response) {
         timeStart: s.timeStart!.toISOString(),
         time: formatTimeHHmmBangkok(s.timeStart!),
         available: (s.status || "").toLowerCase() === "available",
-        counselor: room.roomName,
-        counselorEmail: s.counselor?.user?.cmuAccount ?? null,
+        counselor: counselorName ?? room.roomName,
+        counselorEmail:
+          s.counselor?.user?.cmuAccount ??
+          room.counselor?.user?.cmuAccount ??
+          null,
       }));
 
     return res.json({
       date,
       roomId,
       roomName: room.roomName,
+      counselorName,
       slots,
     });
   } catch (err) {
@@ -225,7 +246,15 @@ export async function bookSession(req: AuthRequest, res: Response) {
       const session = await tx.session.findUnique({
         where: { sessionId },
         include: {
-          room: true,
+          room: {
+            include: {
+              counselor: {
+                include: {
+                  user: true,
+                },
+              },
+            },
+          },
           counselor: { include: { user: true } },
         },
       });
@@ -234,7 +263,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
         return { ok: false as const, status: 404, message: "Session not found" };
       }
 
-      //  --- รันเลข Token --- 
+      //  --- รันเลข Token ---
       const caseToken = await getOrGenerateQueueToken(latestCase.caseId, tx);
       const sessionCount = await tx.session.count({
         where: { caseId: latestCase.caseId }
@@ -256,6 +285,11 @@ export async function bookSession(req: AuthRequest, res: Response) {
         return { ok: false as const, status: 409, message: "Session already booked" };
       }
 
+      const counselorName =
+        session.room?.counselor?.user
+          ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`
+          : null;
+
       // ✅ Store what the user typed (description) in history details
       await tx.sessionHistory.create({
         data: {
@@ -267,6 +301,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
             description: description ?? "",
             googleEventId: googleEventId ?? null,
             roomName: session.room?.roomName ?? null,
+            counselorName,
             timeStart: session.timeStart.toISOString(),
           }),
           editedBy: user.userId,
@@ -276,7 +311,11 @@ export async function bookSession(req: AuthRequest, res: Response) {
       return {
         ok: true as const,
         roomName: session.room?.roomName ?? "ห้อง",
-        counselorEmail: session.counselor?.user?.cmuAccount ?? null,
+        counselorName,
+        counselorEmail:
+          session.counselor?.user?.cmuAccount ??
+          session.room?.counselor?.user?.cmuAccount ??
+          null,
         timeStartISO: session.timeStart.toISOString(),
         timeHHmm: formatTimeHHmmBangkok(session.timeStart),
         caseId: latestCase.caseId,
@@ -291,13 +330,14 @@ export async function bookSession(req: AuthRequest, res: Response) {
     const mailer = buildMailer();
     if (mailer) {
       const from = process.env.MAIL_FROM ?? process.env.SMTP_USER!;
-      const to = cmuAccount; // already stored as cmu account email
+      const to = cmuAccount;
 
       const subject = "ยืนยันคำขอจองคิวรับคำปรึกษา (Entaneer Mind)";
       const text = [
         `เราได้รับคำขอจองคิวของคุณแล้ว`,
         ``,
-        `ผู้ให้คำปรึกษา/ห้อง: ${result.roomName}`,
+        `ผู้ให้คำปรึกษา: ${result.counselorName ?? "-"}`,
+        `ห้อง: ${result.roomName}`,
         `วันเวลา: ${result.timeHHmm} น.`,
         `Case ID: ${result.caseId}`,
         ``,
@@ -316,6 +356,8 @@ export async function bookSession(req: AuthRequest, res: Response) {
       caseId: result.caseId,
       sessionId,
       timeStart: result.timeStartISO,
+      counselorName: result.counselorName,
+      roomName: result.roomName,
     });
   } catch (err) {
     console.error("bookSession error:", err);
@@ -328,12 +370,12 @@ async function getOrGenerateQueueToken(caseId: number, tx: any) {
   if (currentCase.queueToken) return currentCase.queueToken;
 
   const now = new Date();
-  let thaiYear = now.getFullYear() + 543;
+  const thaiYear = now.getFullYear() + 543;
   const yearPrefix = thaiYear.toString().slice(-2);
 
   const lastCase = await tx.case.findFirst({
     where: { queueToken: { startsWith: yearPrefix } },
-    orderBy: { queueToken: 'desc' },
+    orderBy: { queueToken: "desc" },
   });
 
   let nextNumber = 1;
@@ -341,11 +383,12 @@ async function getOrGenerateQueueToken(caseId: number, tx: any) {
     const lastNumber = parseInt(lastCase.queueToken.slice(2), 10);
     nextNumber = lastNumber + 1;
   }
-  const newToken = `${yearPrefix}${nextNumber.toString().padStart(4, '0')}`;
+  const newToken = `${yearPrefix}${nextNumber.toString().padStart(4, "0")}`;
 
   await tx.case.update({
     where: { caseId },
     data: { queueToken: newToken },
   });
+
   return newToken;
 }
