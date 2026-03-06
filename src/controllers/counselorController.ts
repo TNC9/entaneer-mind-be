@@ -1182,7 +1182,35 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
         }
       })
     ]);
+    // Average wait days: difference between confirmedAt and createdAt for confirmed/completed cases
+    const casesWithWait = cases.filter(c => c.confirmedAt && c.createdAt);
+    const averageWaitDays = casesWithWait.length > 0
+      ? Math.round(
+          casesWithWait.reduce((sum, c) => {
+            const diff = new Date(c.confirmedAt!).getTime() - new Date(c.createdAt).getTime();
+            return sum + diff / (1000 * 60 * 60 * 24);
+          }, 0) / casesWithWait.length
+        )
+      : 0;
 
+    const departmentCounts: Record<string, number> = {};
+    cases.forEach(c => {
+      const dept = c.client.department || 'อื่นๆ';
+      departmentCounts[dept] = (departmentCounts[dept] || 0) + 1;
+    });
+    const byDepartment = Object.entries(departmentCounts)
+      .sort(([, a], [, b]) => b - a)
+      .map(([department, count]) => ({ department, count }));    
+
+    const monthlyMap: Record<string, number> = {};
+    sessions.forEach(s => {
+      const d = new Date(s.createdAt);
+      const key = d.toLocaleDateString('th-TH', { month: 'short' });
+      monthlyMap[key] = (monthlyMap[key] || 0) + 1;
+    });
+    const monthlySessions = Object.entries(monthlyMap)
+      .map(([month, count]) => ({ month, count }));      
+      
     // Calculate stats
     const caseStats = {
       total: cases.length,
@@ -1268,15 +1296,21 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
       success: true,
       message: 'Report generated successfully',
       data: {
-        reportPeriod: {
-          startDate: start.toISOString(),
-          endDate: end.toISOString()
+        period: {
+          from: start.toISOString(),
+          to: end.toISOString()
         },
-        caseStats,
-        sessionStats,
-        userStats,
-        topProblemTags,
-        counselorStats,
+        summary: {
+          totalSessions: sessionStats.total,
+          completedSessions: sessionStats.byStatus.completed,
+          cancelledSessions: sessionStats.byStatus.cancelled,
+          newClients: userStats.byRole.client,
+          averageWaitDays
+        },
+        topTags: topProblemTags.map(t => ({ tag: t.label, count: t.count })),
+        byDepartment,
+        counselorWorkload: counselorStats.map(c => ({ name: c.name, sessions: c.sessionsCompleted })),
+        monthlySessions,
         generatedAt: new Date().toISOString()
       }
     });
