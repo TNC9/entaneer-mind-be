@@ -91,11 +91,11 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
 
     // A. แลก Code เป็น Access Token
     const tokenResponse = await axios.post(
-      'https://login.microsoftonline.com/cmu.ac.th/oauth2/v2.0/token',
+      'https://login.microsoftonline.com/cf81f1df-de59-4c29-91da-a2dfd04aa751/oauth2/v2.0/token',
       new URLSearchParams({
         client_id: process.env.CMU_CLIENT_ID!,
         client_secret: process.env.CMU_CLIENT_SECRET!,
-        scope: 'openid profile email offline_access User.Read',
+        scope: process.env.CMU_SCOPE!,
         redirect_uri: process.env.CMU_REDIRECT_URL!,
         grant_type: 'authorization_code',
         code: code as string,
@@ -105,45 +105,83 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
 
     const accessToken = tokenResponse.data.access_token;
 
-    // B. ดึงข้อมูล User Profile
-    const userResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
+    // B. ดึงข้อมูล User Profile จาก API ของมช. โดยตรง
+    const userResponse = await axios.get('https://api.cmu.ac.th/mis/cmuaccount/prod/v3/me/basicinfo', {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
     const cmuData = userResponse.data; 
-    const email = cmuData.mail || cmuData.userPrincipalName;
+    const email = cmuData.cmuitaccount;
+
+    // ---------------------------------------------------------
+    // 💡 1. Logic ดึงข้อมูล เพศ, รหัสนศ, คณะ ตามที่คุณออกแบบไว้
+    // ---------------------------------------------------------
+    
+    // แปลงเพศ (Gender)
+    const prename = (cmuData.prename_EN || cmuData.prename_id || '').toUpperCase();
+    let gender = null;
+    if (prename.includes('MR')) {
+        gender = 'Male';
+    } else if (prename.includes('MS') || prename.includes('MISS') || prename.includes('MRS')) {
+        gender = 'Female';
+    }
+
+    // ดึงรหัสนศ, คณะ, สาขา
+    const studentId = cmuData.student_id || null;
+    const department = cmuData.organization_name_TH || null; 
+    const major = cmuData.major || null; // ถ้ามช.ไม่ส่งมา ค่านี้จะเป็น null
 
     let user = await prisma.user.findUnique({ 
         where: { cmuAccount: email },
         include: { clientProfile: true } // check ว่ามี profile หรือยัง
     });
 
+    // C. เซฟลง Database
     if (!user) {
-      // 1. สร้าง User หลักก่อน
+      // สร้าง User ใหม่ พร้อมบันทึก Gender ลงตาราง User
       user = await prisma.user.create({
         data: {
           cmuAccount: email,
-          firstName: cmuData.givenName || 'Unknown',
-          lastName: cmuData.surname || 'Unknown',
+          firstName: cmuData.firstname_TH || 'Unknown',
+          lastName: cmuData.lastname_TH || 'Unknown',
+          gender: gender, // <--- เซฟเพศ
           roleName: 'client', 
         },
-        include: { clientProfile: true } // create แล้ว return profile มาด้วย
+        include: { clientProfile: true }
       });
+    } else {
+       // ถ้ามี User อยู่แล้ว ให้อัปเดตเพศให้ตรงกับปัจจุบัน
+       if (gender && user.gender !== gender) {
+          await prisma.user.update({
+              where: { userId: user.userId },
+              data: { gender: gender }
+          });
+       }
     }
 
-    // 2. ถ้าเป็น client แต่ยังไม่มี Profile ในตาราง client ให้สร้างเพิ่ม
-    if (user.roleName === 'client' && !user.clientProfile) {
-        // ดึง client ID จาก email(รองรับทั้ง นศ. และบุคลากร)
-        const clientIdFromEmail = email.split('@')[0]; 
+    // จัดการ Client Profile (บันทึก รหัสนศ, คณะ, สาขา ลงตาราง Client)
+    if (user.roleName === 'client') {
+        if (!user.clientProfile) {
+            const clientIdToUse = studentId || email.split('@')[0]; 
 
-        await prisma.client.create({
-            data: {
-                userId: user.userId, // ผูกกับ User ID ที่เพิ่งสร้าง
-                clientId: clientIdFromEmail, // หรือใช้ cmuData.clientId ถ้ามี
-                major: 'General',      // ใส่ค่า default ไปก่อน
-                department: 'General' 
-            }
-        });
+            await prisma.client.create({
+                data: {
+                    userId: user.userId,
+                    clientId: clientIdToUse, // <--- เซฟรหัสนศ.
+                    major: major,            // <--- เซฟสาขา
+                    department: department   // <--- เซฟคณะ
+                }
+            });
+        } else {
+            // อัปเดตข้อมูลคณะ/สาขาให้ล่าสุดเสมอ
+            await prisma.client.update({
+                where: { userId: user.userId },
+                data: {
+                    major: major || user.clientProfile.major,
+                    department: department || user.clientProfile.department
+                }
+            });
+        }
     }
 
     // D. สร้าง Token ของเราเอง
