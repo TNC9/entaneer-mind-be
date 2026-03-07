@@ -260,10 +260,22 @@ export async function bookSession(req: AuthRequest, res: Response) {
 
       //  --- รันเลข Token ---
       const caseToken = await getOrGenerateQueueToken(latestCase.caseId, tx);
-      const sessionCount = await tx.session.count({
-        where: { caseId: latestCase.caseId }
+
+      // หา Token ล่าสุดของเคสนี้ (ดักพวกรันคิวซ้ำ กรณีเคยกดยกเลิกคิวไปแล้ว)
+      const lastSession = await tx.session.findFirst({
+        where: { sessionToken: { startsWith: `${caseToken}-` } },
+        orderBy: { sessionToken: "desc" },
       });
-      const sessionToken = `${caseToken}-${(sessionCount + 1).toString().padStart(3, "0")}`;
+
+      let nextNum = 1;
+      if (lastSession && lastSession.sessionToken) {
+        const parts = lastSession.sessionToken.split("-");
+        const lastNum = parseInt(parts[parts.length - 1], 10);
+        if (!isNaN(lastNum)) {
+          nextNum = lastNum + 1;
+        }
+      }
+      const sessionToken = `${caseToken}-${nextNum.toString().padStart(3, "0")}`;
 
       // เปลี่ยนชื่อในช่องนัดหมายจาก รหัสนศ. เป็น ชื่อ-นามสกุล จริง
       const sessionNameStr = `${user.firstName} ${user.lastName}`;
@@ -276,6 +288,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
           sessionName: sessionNameStr,
           caseId: latestCase.caseId,
           sessionToken: sessionToken,
+          counselorId: session.room?.counselorId,
         },
       });
 
@@ -284,12 +297,14 @@ export async function bookSession(req: AuthRequest, res: Response) {
       }
 
       // อัปเดตให้ Case รู้ว่าใครคือ Counselor ที่รับผิดชอบ
-      if (session.counselorId && !latestCase!.counselorId) {
+      const targetCounselorId = session.counselorId || session.room?.counselorId;
+      if (targetCounselorId && !latestCase!.counselorId) {
         await tx.case.update({
           where: { caseId: latestCase!.caseId },
-          data: { counselorId: session.counselorId }
+          data: { counselorId: targetCounselorId }
         });
       }
+      
       const counselorName =
         session.room?.counselor?.user
           ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`

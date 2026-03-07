@@ -327,6 +327,15 @@ export async function toggleSlot(req: AuthRequest, res: Response) {
     const timeEnd = new Date(timeStart);
     timeEnd.setHours(timeEnd.getHours() + 1);
 
+    const room = await prisma.room.findUnique({
+      where: { roomId },
+      select: { counselorId: true }
+    });
+    
+    if (!room) {
+      return res.status(404).json({ message: "Room not found" });
+    }
+
     const existing = await prisma.session.findFirst({
       where: { roomId, timeStart },
       select: { sessionId: true, status: true, caseId: true },
@@ -336,6 +345,7 @@ export async function toggleSlot(req: AuthRequest, res: Response) {
       const created = await prisma.session.create({
         data: {
           roomId,
+          counselorId: room.counselorId,
           timeStart,
           timeEnd,
           status: "available",
@@ -475,6 +485,15 @@ export async function bulkWeek(req: AuthRequest, res: Response) {
       return res.status(400).json({ message: "Invalid weekStart" });
     }
 
+    const room = await prisma.room.findUnique({
+      where: { roomId },
+      select: { counselorId: true }
+    });
+    
+    if (!room) {
+      return res.status(404).json({ message: "Room not found" });
+    }
+
     const { start } = weekRange(weekStart);
     const changes: number[] = [];
 
@@ -497,6 +516,7 @@ export async function bulkWeek(req: AuthRequest, res: Response) {
           const created = await prisma.session.create({
             data: {
               roomId,
+              counselorId: room.counselorId,
               timeStart,
               timeEnd,
               status: makeAvailable ? "available" : "closed",
