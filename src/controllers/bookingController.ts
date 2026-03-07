@@ -275,25 +275,12 @@ export async function bookSession(req: AuthRequest, res: Response) {
       }
 
       const caseToken = await getOrGenerateQueueToken(latestCase.caseId, tx);
-
-      // safer than count(): continue from latest existing suffix
-      const lastSession = await tx.session.findFirst({
-        where: {
-          sessionToken: { startsWith: `${caseToken}-` },
-        },
-        orderBy: { sessionToken: "desc" },
+      const sessionCount = await tx.session.count({
+        where: { caseId: latestCase.caseId }
       });
+      const sessionToken = `${caseToken}-${(sessionCount + 1).toString().padStart(3, "0")}`;
 
-      let nextNum = 1;
-      if (lastSession?.sessionToken) {
-        const parts = lastSession.sessionToken.split("-");
-        const lastNum = parseInt(parts[parts.length - 1], 10);
-        if (!Number.isNaN(lastNum)) {
-          nextNum = lastNum + 1;
-        }
-      }
-
-      const sessionToken = `${caseToken}-${nextNum.toString().padStart(3, "0")}`;
+      // เปลี่ยนชื่อในช่องนัดหมายจาก รหัสนศ. เป็น ชื่อ-นามสกุล จริง
       const sessionNameStr = `${user.firstName} ${user.lastName}`;
       const targetCounselorId = session.room?.counselorId ?? session.counselorId ?? null;
 
@@ -303,8 +290,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
           status: "booked",
           sessionName: sessionNameStr,
           caseId: latestCase.caseId,
-          sessionToken,
-          counselorId: targetCounselorId,
+          sessionToken: sessionToken,
         },
       });
 
@@ -312,18 +298,17 @@ export async function bookSession(req: AuthRequest, res: Response) {
         return { ok: false as const, status: 409, message: "Session already booked" };
       }
 
-      if (targetCounselorId && !latestCase.counselorId) {
+      // อัปเดตให้ Case รู้ว่าใครคือ Counselor ที่รับผิดชอบ
+      if (session.counselorId && !latestCase!.counselorId) {
         await tx.case.update({
-          where: { caseId: latestCase.caseId },
-          data: { counselorId: targetCounselorId },
+          where: { caseId: latestCase!.caseId },
+          data: { counselorId: session.counselorId }
         });
       }
-
-      const counselorName = session.room?.counselor?.user
-        ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`
-        : session.counselor?.user
-        ? `${session.counselor.user.firstName} ${session.counselor.user.lastName}`
-        : null;
+      const counselorName =
+        session.room?.counselor?.user
+          ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`
+          : null;
 
       await tx.sessionHistory.create({
         data: {
