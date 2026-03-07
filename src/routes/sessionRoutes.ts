@@ -14,10 +14,13 @@ import {
   counselorRecords,
   getCaseNote,
   updateCaseNote,
+  getCaseNotesByClientId,
 
   // ✅ case code lookup
   getCaseNoteByCode,
 } from "../controllers/sessionController";
+
+
 
 const router = Router();
 
@@ -36,6 +39,13 @@ router.get(
   authenticateToken,
   requireCounselor,
   getCaseNoteByCode
+);
+
+router.get(
+  "/case-note/by-client/:clientId",
+  authenticateToken,
+  requireCounselor,
+  getCaseNotesByClientId
 );
 
 export default router;

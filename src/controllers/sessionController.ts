@@ -17,7 +17,7 @@ function inferClientNotes(details: string | null | undefined): string {
   const obj = safeJsonParse(details);
   if (obj && typeof obj === "object") {
     if (typeof obj.description === "string") return obj.description;
-    if (typeof obj.notes === "string") return obj.notes;
+    if (typeof obj.notes === "string") return obj.description ?? obj.notes;
   }
   if (details && details.trim()) return details.trim();
   return "";
@@ -30,7 +30,11 @@ function formatDateISO(d: Date | null): string {
 
 function formatTimeHHmm(d: Date | null): string {
   if (!d) return "";
-  return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return d.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 /** Pull client's booking text from CLIENT_BOOKED history */
@@ -56,7 +60,9 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
     const userId = req.user?.userId;
     const clientId = req.user?.clientId;
 
-    if (!userId || !clientId) return res.status(401).json({ message: "Unauthorized" });
+    if (!userId || !clientId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const booked = await prisma.sessionHistory.findMany({
       where: { editedBy: userId, action: "CLIENT_BOOKED" },
@@ -78,12 +84,12 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
       where: {
         sessionId: { in: sessionIds },
         action: {
-      in: ["CLIENT_CANCELLED", "PORTAL_CANCELLED_BOOKING"],
+          in: ["CLIENT_CANCELLED", "PORTAL_CANCELLED_BOOKING"],
+        },
       },
-     },
-  orderBy: { timestamp: "desc" },
-  select: { sessionId: true, action: true, timestamp: true },
-});
+      orderBy: { timestamp: "desc" },
+      select: { sessionId: true, action: true, timestamp: true },
+    });
 
     const cancelledSet = new Set<number>();
     for (const c of cancelled) cancelledSet.add(c.sessionId);
@@ -93,7 +99,9 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
       const timeStart = s?.timeStart ? s.timeStart.toISOString() : null;
 
       const isCurrentlyBookedByClient =
-        !!s?.caseId && s?.case?.clientId === clientId && (s.status || "").toLowerCase() !== "available";
+        !!s?.caseId &&
+        s?.case?.clientId === clientId &&
+        (s.status || "").toLowerCase() !== "available";
 
       let status: "upcoming" | "completed" | "cancelled" = "completed";
       if (isCurrentlyBookedByClient) status = "upcoming";
@@ -126,8 +134,12 @@ export async function cancelClientSession(req: AuthRequest, res: Response) {
     const clientId = req.user?.clientId;
     const sessionId = Number(req.params.sessionId);
 
-    if (!userId || !clientId) return res.status(401).json({ message: "Unauthorized" });
-    if (!sessionId || Number.isNaN(sessionId)) return res.status(400).json({ message: "Invalid sessionId" });
+    if (!userId || !clientId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    if (!sessionId || Number.isNaN(sessionId)) {
+      return res.status(400).json({ message: "Invalid sessionId" });
+    }
 
     const session = await prisma.session.findUnique({
       where: { sessionId },
@@ -177,6 +189,7 @@ export async function cancelClientSession(req: AuthRequest, res: Response) {
 /**
  * GET /api/sessions/counselor/records
  * Returns sessions for this counselor mapped to your CaseNote UI
+ * FIX: only include sessions that already have caseId
  */
 export async function counselorRecords(req: AuthRequest, res: Response) {
   try {
@@ -184,16 +197,28 @@ export async function counselorRecords(req: AuthRequest, res: Response) {
     if (!counselorId) return res.status(401).json({ message: "Unauthorized" });
 
     const sessions = await prisma.session.findMany({
-      where: { counselorId },
+      where: {
+        counselorId,
+        caseId: { not: null },
+      },
       orderBy: [{ timeStart: "desc" }, { sessionId: "desc" }],
       include: {
         room: true,
-        problemTags: { where: { isActive: true }, select: { id: true, label: true } },
+        problemTags: {
+          where: { isActive: true },
+          select: { id: true, label: true },
+        },
         case: {
           include: {
             client: {
               include: {
-                user: { select: { firstName: true, lastName: true, isConsentAccepted: true } },
+                user: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    isConsentAccepted: true,
+                  },
+                },
               },
             },
           },
@@ -203,7 +228,7 @@ export async function counselorRecords(req: AuthRequest, res: Response) {
 
     const mapped = await Promise.all(
       sessions.map(async (s) => {
-        const studentId = s.sessionName ?? s.case?.client?.clientId ?? "";
+        const studentId = s.case?.client?.clientId ?? "";
         const studentName = s.case?.client?.user
           ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
           : "";
@@ -241,6 +266,7 @@ export async function counselorRecords(req: AuthRequest, res: Response) {
 /**
  * GET /api/sessions/:sessionId/case-note
  * Auto-fill: caseCode + studentName + date + time from Session table
+ * FIX: reject sessions without caseId
  */
 export async function getCaseNote(req: AuthRequest, res: Response) {
   try {
@@ -248,18 +274,29 @@ export async function getCaseNote(req: AuthRequest, res: Response) {
     if (!counselorId) return res.status(401).json({ message: "Unauthorized" });
 
     const sessionId = Number(req.params.sessionId);
-    if (!sessionId || Number.isNaN(sessionId)) return res.status(400).json({ message: "Invalid sessionId" });
+    if (!sessionId || Number.isNaN(sessionId)) {
+      return res.status(400).json({ message: "Invalid sessionId" });
+    }
 
     const s = await prisma.session.findUnique({
       where: { sessionId },
       include: {
         room: true,
-        problemTags: { where: { isActive: true }, select: { id: true, label: true } },
+        problemTags: {
+          where: { isActive: true },
+          select: { id: true, label: true },
+        },
         case: {
           include: {
             client: {
               include: {
-                user: { select: { firstName: true, lastName: true, isConsentAccepted: true } },
+                user: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    isConsentAccepted: true,
+                  },
+                },
               },
             },
           },
@@ -268,14 +305,19 @@ export async function getCaseNote(req: AuthRequest, res: Response) {
     });
 
     if (!s) return res.status(404).json({ message: "Session not found" });
-    if (s.counselorId !== counselorId) return res.status(403).json({ message: "Forbidden" });
+    if (!s.caseId) {
+      return res.status(404).json({ message: "Case note not found for this session" });
+    }
+    if (s.counselorId !== counselorId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
 
-    const studentId = s.sessionName ?? s.case?.client?.clientId ?? "";
+    const studentId = s.case?.client?.clientId ?? "";
     const studentName = s.case?.client?.user
       ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
       : "";
 
-    const caseCode = s.sessionToken || "N/A";;
+    const caseCode = s.sessionToken || "N/A";
     const clientText = await getClientBookingText(s.sessionId);
 
     return res.json({
@@ -312,15 +354,20 @@ export async function getCaseNote(req: AuthRequest, res: Response) {
  *   selectedTagIds: number[],
  *   markCompleted?: boolean
  * }
+ * FIX: reject sessions without caseId
  */
 export async function updateCaseNote(req: AuthRequest, res: Response) {
   try {
     const counselorId = req.user?.counselorId;
     const editorUserId = req.user?.userId;
-    if (!counselorId || !editorUserId) return res.status(401).json({ message: "Unauthorized" });
+    if (!counselorId || !editorUserId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const sessionId = Number(req.params.sessionId);
-    if (!sessionId || Number.isNaN(sessionId)) return res.status(400).json({ message: "Invalid sessionId" });
+    if (!sessionId || Number.isNaN(sessionId)) {
+      return res.status(400).json({ message: "Invalid sessionId" });
+    }
 
     const {
       moodScale,
@@ -349,13 +396,17 @@ export async function updateCaseNote(req: AuthRequest, res: Response) {
     });
 
     if (!s) return res.status(404).json({ message: "Session not found" });
-    if (s.counselorId !== counselorId) return res.status(403).json({ message: "Forbidden" });
+    if (!s.caseId) {
+      return res.status(404).json({ message: "Case note not found for this session" });
+    }
+    if (s.counselorId !== counselorId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
 
     const tagIds = (selectedTagIds ?? [])
       .map(Number)
       .filter((n) => Number.isFinite(n));
 
-    // validate tags exist and active
     const validTags = await prisma.problemTag.findMany({
       where: { id: { in: tagIds }, isActive: true },
       select: { id: true },
@@ -418,24 +469,37 @@ export async function updateCaseNote(req: AuthRequest, res: Response) {
   }
 }
 
-// GET /api/sessions/case-note/by-code/:caseCode
+/**
+ * GET /api/sessions/case-note/by-code/:caseCode
+ * FIX: reject sessions without caseId
+ */
 export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
   try {
     const counselorId = req.user?.counselorId;
     if (!counselorId) return res.status(401).json({ message: "Unauthorized" });
 
-    const code = String(req.params.caseCode || "").trim(); // เช่น "690001-001"
+    const code = String(req.params.caseCode || "").trim();
 
-    // ค้นหาจาก sessionToken ตรงๆ ได้เลย!
     const s = await prisma.session.findUnique({
-      where: { sessionToken: code }, 
+      where: { sessionToken: code },
       include: {
         room: true,
-        problemTags: { where: { isActive: true }, select: { id: true, label: true } },
+        problemTags: {
+          where: { isActive: true },
+          select: { id: true, label: true },
+        },
         case: {
           include: {
             client: {
-              include: { user: { select: { firstName: true, lastName: true, isConsentAccepted: true } } },
+              include: {
+                user: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    isConsentAccepted: true,
+                  },
+                },
+              },
             },
           },
         },
@@ -443,14 +507,23 @@ export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
     });
 
     if (!s) return res.status(404).json({ message: "Session not found" });
-    if (s.counselorId !== counselorId) return res.status(403).json({ message: "Forbidden" });
+    if (!s.caseId) {
+      return res.status(404).json({ message: "Case note not found for this session" });
+    }
+    if (s.counselorId !== counselorId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
 
-    const studentId = s.sessionName ?? s.case?.client?.clientId ?? "";
+    const studentId = s.case?.client?.clientId ?? "";
     const clientText = await getClientBookingText(s.sessionId);
     const timeStart = s.timeStart ? new Date(s.timeStart) : null;
     const sessionDate = timeStart ? timeStart.toISOString().split("T")[0] : "";
     const sessionTime = timeStart
-      ? timeStart.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+      ? timeStart.toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        })
       : "";
 
     const studentName = s.case?.client?.user
@@ -477,5 +550,96 @@ export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
   } catch (err) {
     console.error("getCaseNoteByCode error:", err);
     return res.status(500).json({ message: "Failed to load case note" });
+  }
+}
+
+/**
+ * GET /api/sessions/case-note/by-client/:clientId
+ * Returns all case notes for this counselor + this clientId
+ */
+export async function getCaseNotesByClientId(req: AuthRequest, res: Response) {
+  try {
+    const counselorId = req.user?.counselorId;
+    if (!counselorId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const clientId = String(req.params.clientId || "").trim();
+    if (!clientId) {
+      return res.status(400).json({ message: "clientId is required" });
+    }
+
+    const sessions = await prisma.session.findMany({
+      where: {
+        counselorId,
+        caseId: { not: null },
+        case: {
+          is: {
+            clientId,
+          },
+        },
+      },
+      orderBy: [{ timeStart: "desc" }, { sessionId: "desc" }],
+      include: {
+        room: true,
+        problemTags: {
+          where: { isActive: true },
+          select: { id: true, label: true },
+        },
+        case: {
+          include: {
+            client: {
+              include: {
+                user: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    isConsentAccepted: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (sessions.length === 0) {
+      return res.status(404).json({ message: "No case notes found for this clientId" });
+    }
+
+    const mapped = await Promise.all(
+      sessions.map(async (s) => {
+        const studentId = s.case?.client?.clientId ?? "";
+        const studentName = s.case?.client?.user
+          ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
+          : "";
+
+        const clientText = await getClientBookingText(s.sessionId);
+
+        return {
+          id: String(s.sessionId),
+          sessionId: s.sessionId,
+          caseCode: s.sessionToken || "N/A",
+          studentId,
+          studentName,
+          department: s.case?.client?.department ?? "",
+          sessionDate: formatDateISO(s.timeStart),
+          sessionTime: formatTimeHHmm(s.timeStart),
+          moodScale: s.moodScale ?? 3,
+          selectedTags: s.problemTags.map((t) => t.label),
+          sessionSummary: s.counselorKeyword ?? "",
+          interventions: s.counselorNote ?? "",
+          followUp: s.counselorFollowup ?? "",
+          consentSigned: !!s.case?.client?.user?.isConsentAccepted,
+          clientText,
+        };
+      })
+    );
+
+    return res.json(mapped);
+  } catch (err) {
+    console.error("getCaseNotesByClientId error:", err);
+    return res.status(500).json({ message: "Failed to load case notes" });
   }
 }
