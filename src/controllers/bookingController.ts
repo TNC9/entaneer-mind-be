@@ -44,7 +44,8 @@ function buildMailer() {
 
 /**
  * GET /api/bookings/counselors
- * Return active rooms with assigned counselor name.
+ * Return active rooms with assigned counselor name/email.
+ * Also keeps roomName in the response.
  */
 export async function listCounselors(_req: Request, res: Response) {
   try {
@@ -165,7 +166,7 @@ export async function listSessions(req: Request, res: Response) {
 
 /**
  * POST /api/bookings/book
- * Body: { sessionId, studentId, phone, description?, googleEventId? }
+ * Body: { sessionId, studentId?, phone?, description?, googleEventId? }
  *
  * Requires authenticateToken + requireClient in routes so req.user exists.
  */
@@ -180,8 +181,8 @@ export async function bookSession(req: AuthRequest, res: Response) {
 
     const { sessionId, studentId, phone, description, googleEventId } = req.body as {
       sessionId: number;
-      studentId?: string; // ปรับให้เป็น Optional
-      phone?: string;     // ปรับให้เป็น Optional
+      studentId?: string;
+      phone?: string;
       description?: string;
       googleEventId?: string | null;
     };
@@ -190,18 +191,29 @@ export async function bookSession(req: AuthRequest, res: Response) {
       return res.status(400).json({ message: "sessionId is required" });
     }
 
-    // 1. โหลดข้อมูล User และ Client Profile
+    if (studentId && !/^\d{9}$/.test(studentId)) {
+      return res.status(400).json({ message: "studentId must be 9 digits" });
+    }
+
+    if (phone && !/^\d{10}$/.test(phone)) {
+      return res.status(400).json({ message: "phone must be 10 digits" });
+    }
+
+    // 1) Load User + Client Profile
     const user = await prisma.user.findUnique({
       where: { userId },
       include: { clientProfile: true },
     });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
-    // 2. จัดการ Client Profile แบบยืดหยุ่น (รองรับบุคลากร)
+    // 2) Flexible client profile creation (supports students and staff)
     let client = user.clientProfile;
     if (!client) {
-      // ถ้าไม่มี Profile ให้ใช้ studentId (ถ้ามีและเป็น 9 หลัก) ถ้าไม่มีให้ใช้ cmuAccount แทน
-      const newClientId = (studentId && /^\d{9}$/.test(studentId)) ? studentId : cmuAccount;
+      const newClientId =
+        studentId && /^\d{9}$/.test(studentId) ? studentId : cmuAccount;
+
       client = await prisma.client.create({
         data: {
           userId: user.userId,
@@ -210,7 +222,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
       });
     }
 
-    // อัปเดตเบอร์โทรศัพท์ (ถ้ามีการส่งมาใหม่)
+    // Update phone if new value provided
     if (phone && phone.trim() !== "" && (user.phoneNum || "") !== phone) {
       await prisma.user.update({
         where: { userId: user.userId },
@@ -218,25 +230,25 @@ export async function bookSession(req: AuthRequest, res: Response) {
       });
     }
 
-    // 3. ดึงเฉพาะ Case ที่กำลัง Active อยู่ (ป้องกันการเผลอไปหยิบเคสเก่าที่เรียนจบ/ยกเลิกไปแล้ว)
+    // 3) Only reuse active cases
     let latestCase = await prisma.case.findFirst({
-      where: { clientId: client.clientId,
-        status: { in: ['waiting_confirmation', 'confirmed', 'in_progress'] },
-       },
+      where: {
+        clientId: client.clientId,
+        status: { in: ["waiting_confirmation", "confirmed", "in_progress"] },
+      },
       orderBy: { createdAt: "desc" },
     });
 
-    // ถ้าไม่มีเคส Active เลย ให้เปิดแฟ้มใหม่
     if (!latestCase) {
       latestCase = await prisma.case.create({
         data: {
           clientId: client.clientId,
-          status: 'waiting_confirmation'
+          status: "waiting_confirmation",
         },
       });
     }
 
-    // 4. เริ่ม Transaction จองคิว
+    // 4) Booking transaction
     const result = await prisma.$transaction(async (tx) => {
       const session = await tx.session.findUnique({
         where: { sessionId },
@@ -250,7 +262,11 @@ export async function bookSession(req: AuthRequest, res: Response) {
               },
             },
           },
-          counselor: { include: { user: true } },
+          counselor: {
+            include: {
+              user: true,
+            },
+          },
         },
       });
 
@@ -258,24 +274,37 @@ export async function bookSession(req: AuthRequest, res: Response) {
         return { ok: false as const, status: 404, message: "Session not found" };
       }
 
-      //  --- รันเลข Token ---
       const caseToken = await getOrGenerateQueueToken(latestCase.caseId, tx);
-      const sessionCount = await tx.session.count({
-        where: { caseId: latestCase.caseId }
+
+      // safer than count(): continue from latest existing suffix
+      const lastSession = await tx.session.findFirst({
+        where: {
+          sessionToken: { startsWith: `${caseToken}-` },
+        },
+        orderBy: { sessionToken: "desc" },
       });
-      const sessionToken = `${caseToken}-${(sessionCount + 1).toString().padStart(3, "0")}`;
 
-      // เปลี่ยนชื่อในช่องนัดหมายจาก รหัสนศ. เป็น ชื่อ-นามสกุล จริง
+      let nextNum = 1;
+      if (lastSession?.sessionToken) {
+        const parts = lastSession.sessionToken.split("-");
+        const lastNum = parseInt(parts[parts.length - 1], 10);
+        if (!Number.isNaN(lastNum)) {
+          nextNum = lastNum + 1;
+        }
+      }
+
+      const sessionToken = `${caseToken}-${nextNum.toString().padStart(3, "0")}`;
       const sessionNameStr = `${user.firstName} ${user.lastName}`;
+      const targetCounselorId = session.room?.counselorId ?? session.counselorId ?? null;
 
-      // ผูก caseId เข้ากับ Session
       const updated = await tx.session.updateMany({
         where: { sessionId, status: "available" },
         data: {
           status: "booked",
           sessionName: sessionNameStr,
           caseId: latestCase.caseId,
-          sessionToken: sessionToken,
+          sessionToken,
+          counselorId: targetCounselorId,
         },
       });
 
@@ -283,25 +312,25 @@ export async function bookSession(req: AuthRequest, res: Response) {
         return { ok: false as const, status: 409, message: "Session already booked" };
       }
 
-      // อัปเดตให้ Case รู้ว่าใครคือ Counselor ที่รับผิดชอบ
-      if (session.counselorId && !latestCase!.counselorId) {
+      if (targetCounselorId && !latestCase.counselorId) {
         await tx.case.update({
-          where: { caseId: latestCase!.caseId },
-          data: { counselorId: session.counselorId }
+          where: { caseId: latestCase.caseId },
+          data: { counselorId: targetCounselorId },
         });
       }
-      const counselorName =
-        session.room?.counselor?.user
-          ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`
-          : null;
 
-      // ✅ Store what the user typed (description) in history details
+      const counselorName = session.room?.counselor?.user
+        ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`
+        : session.counselor?.user
+        ? `${session.counselor.user.firstName} ${session.counselor.user.lastName}`
+        : null;
+
       await tx.sessionHistory.create({
         data: {
           sessionId,
           action: "CLIENT_BOOKED",
           details: JSON.stringify({
-            studentId: studentId ?? client?.clientId,
+            studentId: studentId ?? client.clientId,
             phone: phone ?? user.phoneNum ?? "",
             description: description ?? "",
             googleEventId: googleEventId ?? null,
@@ -371,8 +400,11 @@ export async function bookSession(req: AuthRequest, res: Response) {
 }
 
 async function getOrGenerateQueueToken(caseId: number, tx: any) {
-  const currentCase = await tx.case.findUnique({ where: { caseId } });
-  if (currentCase.queueToken) return currentCase.queueToken;
+  const currentCase = await tx.case.findUnique({
+    where: { caseId },
+  });
+
+  if (currentCase?.queueToken) return currentCase.queueToken;
 
   const now = new Date();
   const thaiYear = now.getFullYear() + 543;
@@ -384,10 +416,13 @@ async function getOrGenerateQueueToken(caseId: number, tx: any) {
   });
 
   let nextNumber = 1;
-  if (lastCase && lastCase.queueToken) {
+  if (lastCase?.queueToken) {
     const lastNumber = parseInt(lastCase.queueToken.slice(2), 10);
-    nextNumber = lastNumber + 1;
+    if (!Number.isNaN(lastNumber)) {
+      nextNumber = lastNumber + 1;
+    }
   }
+
   const newToken = `${yearPrefix}${nextNumber.toString().padStart(4, "0")}`;
 
   await tx.case.update({

@@ -39,7 +39,7 @@ function formatTimeHHmmBangkok(d: Date): string {
 function weekRange(weekStartYYYYMMDD: string) {
   const start = new Date(`${weekStartYYYYMMDD}T00:00:00+07:00`);
   const end = new Date(start);
-  end.setDate(end.getDate() + 5); // Saturday 00:00 (exclusive)
+  end.setDate(end.getDate() + 5); // Saturday 00:00 exclusive
   return { start, end };
 }
 
@@ -267,10 +267,11 @@ export async function getWeekSchedule(req: AuthRequest, res: Response) {
 
         const studentName = s.case?.client?.user
           ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
-          : (s.sessionName ?? "");
+          : s.sessionName ?? "";
 
         return {
           sessionId: s.sessionId,
+          counselorId: s.counselorId,
           day,
           date: dateStr,
           time,
@@ -327,27 +328,47 @@ export async function toggleSlot(req: AuthRequest, res: Response) {
     const timeEnd = new Date(timeStart);
     timeEnd.setHours(timeEnd.getHours() + 1);
 
+    const room = await prisma.room.findUnique({
+      where: { roomId },
+      select: {
+        roomId: true,
+        isActive: true,
+        counselorId: true,
+      },
+    });
+
+    if (!room || !room.isActive) {
+      return res.status(404).json({ message: "Room not found" });
+    }
+
     const existing = await prisma.session.findFirst({
       where: { roomId, timeStart },
-      select: { sessionId: true, status: true, caseId: true },
+      select: {
+        sessionId: true,
+        status: true,
+        caseId: true,
+        counselorId: true,
+      },
     });
 
     if (!existing) {
       const created = await prisma.session.create({
         data: {
           roomId,
+          counselorId: room.counselorId ?? null,
           timeStart,
           timeEnd,
           status: "available",
           sessionName: null,
         },
-        select: { sessionId: true, status: true },
+        select: { sessionId: true, status: true, counselorId: true },
       });
 
       return res.json({
         success: true,
         sessionId: created.sessionId,
         status: created.status,
+        counselorId: created.counselorId,
       });
     }
 
@@ -362,8 +383,13 @@ export async function toggleSlot(req: AuthRequest, res: Response) {
 
     const updated = await prisma.session.update({
       where: { sessionId: existing.sessionId },
-      data: { status: nextStatus, sessionName: null, caseId: null },
-      select: { sessionId: true, status: true },
+      data: {
+        status: nextStatus,
+        sessionName: null,
+        caseId: null,
+        counselorId: room.counselorId ?? null,
+      },
+      select: { sessionId: true, status: true, counselorId: true },
     });
 
     if (req.user?.userId) {
@@ -377,6 +403,8 @@ export async function toggleSlot(req: AuthRequest, res: Response) {
             date,
             time,
             roomId,
+            counselorIdBefore: existing.counselorId,
+            counselorIdAfter: updated.counselorId,
           }),
           editedBy: req.user.userId,
         },
@@ -387,6 +415,7 @@ export async function toggleSlot(req: AuthRequest, res: Response) {
       success: true,
       sessionId: updated.sessionId,
       status: updated.status,
+      counselorId: updated.counselorId,
     });
   } catch (err) {
     console.error("toggleSlot error:", err);
@@ -408,6 +437,11 @@ export async function cancelBookedSlot(req: AuthRequest, res: Response) {
       where: { sessionId },
       include: {
         case: { include: { client: { include: { user: true } } } },
+        room: {
+          select: {
+            counselorId: true,
+          },
+        },
       },
     });
 
@@ -420,7 +454,7 @@ export async function cancelBookedSlot(req: AuthRequest, res: Response) {
 
     const bookedName = s.case?.client?.user
       ? `${s.case.client.user.firstName} ${s.case.client.user.lastName}`
-      : (s.sessionName ?? "");
+      : s.sessionName ?? "";
 
     await prisma.session.update({
       where: { sessionId },
@@ -428,6 +462,7 @@ export async function cancelBookedSlot(req: AuthRequest, res: Response) {
         status: "available",
         caseId: null,
         sessionName: null,
+        counselorId: s.room?.counselorId ?? s.counselorId ?? null,
         counselorKeyword: null,
         counselorNote: null,
         counselorFollowup: null,
@@ -475,6 +510,19 @@ export async function bulkWeek(req: AuthRequest, res: Response) {
       return res.status(400).json({ message: "Invalid weekStart" });
     }
 
+    const room = await prisma.room.findUnique({
+      where: { roomId },
+      select: {
+        roomId: true,
+        isActive: true,
+        counselorId: true,
+      },
+    });
+
+    if (!room || !room.isActive) {
+      return res.status(404).json({ message: "Room not found" });
+    }
+
     const { start } = weekRange(weekStart);
     const changes: number[] = [];
 
@@ -490,13 +538,19 @@ export async function bulkWeek(req: AuthRequest, res: Response) {
 
         const existing = await prisma.session.findFirst({
           where: { roomId, timeStart },
-          select: { sessionId: true, status: true, caseId: true },
+          select: {
+            sessionId: true,
+            status: true,
+            caseId: true,
+            counselorId: true,
+          },
         });
 
         if (!existing) {
           const created = await prisma.session.create({
             data: {
               roomId,
+              counselorId: room.counselorId ?? null,
               timeStart,
               timeEnd,
               status: makeAvailable ? "available" : "closed",
@@ -509,16 +563,28 @@ export async function bulkWeek(req: AuthRequest, res: Response) {
         }
 
         const isBooked =
-          (existing.status || "").toLowerCase() === "booked" && !!existing.caseId;
+          (existing.status || "").toLowerCase() === "booked" &&
+          !!existing.caseId;
         if (isBooked) continue;
 
         const nextStatus = makeAvailable ? "available" : "closed";
-        if ((existing.status || "").toLowerCase() === nextStatus) continue;
+        const counselorChanged =
+          (existing.counselorId ?? null) !== (room.counselorId ?? null);
+        const statusChanged =
+          (existing.status || "").toLowerCase() !== nextStatus;
+
+        if (!counselorChanged && !statusChanged) continue;
 
         await prisma.session.update({
           where: { sessionId: existing.sessionId },
-          data: { status: nextStatus, sessionName: null, caseId: null },
+          data: {
+            status: nextStatus,
+            sessionName: null,
+            caseId: null,
+            counselorId: room.counselorId ?? null,
+          },
         });
+
         changes.push(existing.sessionId);
       }
     }
@@ -533,6 +599,7 @@ export async function bulkWeek(req: AuthRequest, res: Response) {
             weekStart,
             makeAvailable,
             changedCount: changes.length,
+            counselorIdApplied: room.counselorId ?? null,
           }),
           editedBy: req.user.userId,
         },

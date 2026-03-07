@@ -22,7 +22,7 @@ export async function cleanupExpiredSessions() {
         lt: bangkokStartOfTodayUtc,
       },
       status: {
-        in: ["available", "closed"],
+        in: ["available", "closed", "cancelled"],
       },
       caseId: null,
     },
