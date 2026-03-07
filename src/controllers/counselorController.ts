@@ -216,18 +216,21 @@ export const getCounselorSchedule = async (req: AuthRequest, res: Response) => {
     }
 
     // Filter by date range if provided
+    // Filter by date range if provided (date-only, same as getFullReport)
     if (startDate || endDate) {
       whereConditions.timeStart = {};
-      
+
       if (startDate) {
         const start = new Date(startDate as string);
+        start.setHours(0, 0, 0, 0);
         if (!isNaN(start.getTime())) {
           whereConditions.timeStart.gte = start;
         }
       }
-      
+
       if (endDate) {
         const end = new Date(endDate as string);
+        end.setHours(23, 59, 59, 999);
         if (!isNaN(end.getTime())) {
           whereConditions.timeStart.lte = end;
         }
@@ -1166,7 +1169,7 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
         }
       }),
       prisma.session.findMany({
-        where: { createdAt: dateFilter },
+        where: { timeStart: dateFilter },
         include: {
           problemTags: true,
           counselor: { include: { user: true } }
