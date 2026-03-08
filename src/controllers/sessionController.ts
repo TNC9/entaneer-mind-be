@@ -520,10 +520,10 @@ export async function getCaseNoteByCode(req: AuthRequest, res: Response) {
     const sessionDate = timeStart ? timeStart.toISOString().split("T")[0] : "";
     const sessionTime = timeStart
       ? timeStart.toLocaleTimeString("en-GB", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        })
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
       : "";
 
     const studentName = s.case?.client?.user
@@ -641,5 +641,46 @@ export async function getCaseNotesByClientId(req: AuthRequest, res: Response) {
   } catch (err) {
     console.error("getCaseNotesByClientId error:", err);
     return res.status(500).json({ message: "Failed to load case notes" });
+  }
+}
+/**
+ * GET /api/sessions/:sessionId/edit-history
+ * Return list of COUNSELOR_NOTE_UPDATED events for this session
+ */
+export async function getSessionEditHistory(req: AuthRequest, res: Response) {
+  try {
+    const counselorId = req.user?.counselorId;
+    if (!counselorId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const sessionId = Number(req.params.sessionId);
+    if (!sessionId || Number.isNaN(sessionId)) {
+      return res.status(400).json({ message: 'Invalid sessionId' });
+    }
+
+    const histories = await prisma.sessionHistory.findMany({
+      where: { sessionId, action: 'COUNSELOR_NOTE_UPDATED' },
+      orderBy: { timestamp: 'desc' },
+      include: {
+        editor: {
+          select: { firstName: true, lastName: true }
+        }
+      }
+    });
+
+    const result = histories.map((h: any) => {
+      const details = safeJsonParse(h.details) ?? {};
+      return {
+        historyId: h.historyId,
+        timestamp: h.timestamp,
+        editorName: h.editor ? `${h.editor.firstName} ${h.editor.lastName}` : 'Unknown',
+        before: details.before ?? null,
+        after: details.after ?? null,
+      };
+    });
+
+    return res.json({ sessionId, history: result });
+  } catch (err) {
+    console.error('getSessionEditHistory error:', err);
+    return res.status(500).json({ message: 'Failed to load history' });
   }
 }

@@ -15,6 +15,7 @@ import {
   getCaseNote,
   updateCaseNote,
   getCaseNotesByClientId,
+  getSessionEditHistory,
 
   // ✅ case code lookup
   getCaseNoteByCode,
@@ -47,5 +48,8 @@ router.get(
   requireCounselor,
   getCaseNotesByClientId
 );
+
+/* ---------- counselor: edit history ---------- */
+router.get("/:sessionId/edit-history", authenticateToken, requireCounselor, getSessionEditHistory);
 
 export default router;

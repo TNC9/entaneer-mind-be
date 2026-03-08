@@ -11,11 +11,12 @@ import {
   getAllUsers,
   updateUserRole,
   getAllCounselors,
+  deleteUser,
+  addUserByCmuAccount,
   // Report & Analytics
   getFullReport,
   getTokenList,
-  createRegistrationCode,
-  deleteRegistrationCode
+  createToken
 } from '../controllers/counselorController';
 
 const router = express.Router();
@@ -48,20 +49,19 @@ router.patch('/api/counselor/users/:userId/role', authenticateToken, requireCoun
 // Get all counselors
 router.get('/api/counselor/counselors', authenticateToken, requireCounselor, getAllCounselors);
 
+// Add user by CMU account (counselor shortcut)
+router.post('/api/counselor/users', authenticateToken, requireCounselor, addUserByCmuAccount);
+
+// Delete user
+router.delete('/api/counselor/users/:userId', authenticateToken, requireCounselor, deleteUser);
+
 // ==================== REPORT & ANALYTICS ====================
 
 // Get full report with date range
 router.get('/api/counselor/report', authenticateToken, requireCounselor, getFullReport);
 
-// ==================== TOKEN MANAGEMENT ====================
-
-// สร้าง Token ใหม่ (เมื่อกดยืนยัน)
-router.post('/api/counselor/tokens', authenticateToken, requireCounselor, createRegistrationCode);
-
-// ดึงรายการ Token ที่ยังไม่ได้ใช้งาน
+// Get queue token list (sortable)
 router.get('/api/counselor/tokens', authenticateToken, requireCounselor, getTokenList);
-
-// ลบ Token 
-router.delete('/api/counselor/tokens/:id', authenticateToken, requireCounselor, deleteRegistrationCode);
+router.post('/api/counselor/tokens', authenticateToken, requireCounselor, createToken);
 
 export default router;

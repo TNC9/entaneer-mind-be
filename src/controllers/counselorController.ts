@@ -13,10 +13,10 @@ import { AuthRequest } from '../middleware/authMiddleware';
 const isValidSessionTime = (timeStart: Date): boolean => {
   const hours = timeStart.getUTCHours(); // UTC time
   const minutes = timeStart.getUTCMinutes(); // UTC time
-  
+
   // Must start at the top of the hour (minutes = 0)
   if (minutes !== 0) return false;
-  
+
   // Must be between 9:00 and 15:00 (last slot ends at 16:00)
   return hours >= 9 && hours <= 15;
 };
@@ -402,11 +402,11 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({
         success: false,
         message: `Cannot delete slot with status: ${session.status}`,
-        reason: session.status === 'booked' 
+        reason: session.status === 'booked'
           ? 'This slot is already booked by a client'
           : session.status === 'completed'
-          ? 'This slot has been completed'
-          : 'This slot cannot be deleted'
+            ? 'This slot has been completed'
+            : 'This slot cannot be deleted'
       });
     }
 
@@ -507,7 +507,7 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
     // Update time if provided
     if (timeStart) {
       const newStartTime = new Date(timeStart);
-      
+
       if (isNaN(newStartTime.getTime())) {
         return res.status(400).json({
           success: false,
@@ -533,7 +533,7 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
 
       // Check for overlaps
       const newEndTime = new Date(newStartTime.getTime() + 60 * 60 * 1000);
-      
+
       const overlappingSlot = await prisma.session.findFirst({
         where: {
           counselorId: userId,
@@ -817,7 +817,7 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
           department: user.clientProfile.department,
           caseStats: {
             total: user.clientProfile.cases.length,
-            active: user.clientProfile.cases.filter(c => 
+            active: user.clientProfile.cases.filter(c =>
               ['waiting_confirmation', 'confirmed', 'in_progress'].includes(c.status)
             ).length,
             completed: user.clientProfile.cases.filter(c => c.status === 'completed').length
@@ -981,8 +981,15 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
           }
         });
 
+        // ถ้ามี active cases ให้ close ก่อนแล้วค่อยเปลี่ยน role
         if (activeCases > 0) {
-          throw new Error('Cannot change role of client with active cases');
+          await tx.case.updateMany({
+            where: {
+              clientId: user.clientProfile.clientId,
+              status: { in: ['waiting_confirmation', 'confirmed', 'in_progress'] }
+            },
+            data: { status: 'cancelled' }
+          });
         }
 
         await tx.client.delete({
@@ -1006,7 +1013,7 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
 
   } catch (error) {
     console.error('Error updating user role:', error);
-    
+
     if ((error as Error).message.includes('active')) {
       return res.status(400).json({
         success: false,
@@ -1089,7 +1096,7 @@ export const getAllCounselors = async (req: AuthRequest, res: Response) => {
       },
       caseStats: {
         total: counselor.cases.length,
-        active: counselor.cases.filter(c => 
+        active: counselor.cases.filter(c =>
           ['waiting_confirmation', 'confirmed', 'in_progress'].includes(c.status)
         ).length,
         completed: counselor.cases.filter(c => c.status === 'completed').length
@@ -1189,11 +1196,11 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
     const casesWithWait = cases.filter(c => c.confirmedAt && c.createdAt);
     const averageWaitDays = casesWithWait.length > 0
       ? Math.round(
-          casesWithWait.reduce((sum, c) => {
-            const diff = new Date(c.confirmedAt!).getTime() - new Date(c.createdAt).getTime();
-            return sum + diff / (1000 * 60 * 60 * 24);
-          }, 0) / casesWithWait.length
-        )
+        casesWithWait.reduce((sum, c) => {
+          const diff = new Date(c.confirmedAt!).getTime() - new Date(c.createdAt).getTime();
+          return sum + diff / (1000 * 60 * 60 * 24);
+        }, 0) / casesWithWait.length
+      )
       : 0;
 
     const departmentCounts: Record<string, number> = {};
@@ -1203,7 +1210,7 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
     });
     const byDepartment = Object.entries(departmentCounts)
       .sort(([, a], [, b]) => b - a)
-      .map(([department, count]) => ({ department, count }));    
+      .map(([department, count]) => ({ department, count }));
 
     const monthlyMap: Record<string, number> = {};
     sessions.forEach(s => {
@@ -1212,8 +1219,8 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
       monthlyMap[key] = (monthlyMap[key] || 0) + 1;
     });
     const monthlySessions = Object.entries(monthlyMap)
-      .map(([month, count]) => ({ month, count }));      
-      
+      .map(([month, count]) => ({ month, count }));
+
     // Calculate stats
     const caseStats = {
       total: cases.length,
@@ -1229,8 +1236,8 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
         medium: cases.filter(c => c.priority === 'medium').length,
         low: cases.filter(c => c.priority === 'low').length
       },
-      averageSessionsPerCase: cases.length > 0 
-        ? cases.reduce((sum, c) => sum + c.sessions.length, 0) / cases.length 
+      averageSessionsPerCase: cases.length > 0
+        ? cases.reduce((sum, c) => sum + c.sessions.length, 0) / cases.length
         : 0
     };
 
@@ -1328,71 +1335,12 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// ==================== REGISTRATION TOKEN MANAGEMENT ====================
-
 /**
- * 1. บันทึก Token ลง Database (หลัง Frontend สุ่มและกดยืนยัน)
- */
-export const createRegistrationCode = async (req: AuthRequest, res: Response) => {
-  try {
-    const counselorUserId = req.user?.userId;
-    const { code } = req.body;
-
-    // Validate counselor role
-    const counselor = await prisma.user.findUnique({
-      where: { userId: counselorUserId }
-    });
-
-    if (!counselor || counselor.roleName !== 'counselor') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Only counselors can create tokens.'
-      });
-    }
-
-    if (!code) {
-      return res.status(400).json({
-        success: false,
-        message: 'Token code is required'
-      });
-    }
-
-    // เซฟลงตาราง RegistrationCode
-    const newCode = await prisma.registrationCode.create({
-      data: {
-        code: code,
-        isUsed: false,
-        createdBy: `${counselor.firstName} ${counselor.lastName}`
-      }
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Token saved successfully',
-      data: {
-        id: newCode.id,
-        token: newCode.code,
-        isUsed: newCode.isUsed
-      }
-    });
-
-  } catch (error: any) {
-    console.error('Error creating token:', error);
-    if (error.code === 'P2002') {
-      return res.status(409).json({
-        success: false,
-        message: 'Token code already exists in database'
-      });
-    }
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error'
-    });
-  }
-};
-
-/**
- * 2. Get list of registration tokens (โชว์เฉพาะอันที่ยังไม่ใช้งาน - isUsed: false)
+ * Get list of registration tokens from RegistrationCode table.
+ * Returns records shaped to match the frontend allToken interface:
+ *   { id, token, isUsed, usedAt?, createdAt }
+ * Sorting is handled client-side; the backend returns all records ordered
+ * by code ascending as a stable default.
  */
 export const getTokenList = async (req: AuthRequest, res: Response) => {
   try {
@@ -1410,20 +1358,18 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Fetch เฉพาะที่ยังไม่ได้ใช้ (isUsed: false)
+    // Fetch all registration codes
     const registrationCodes = await prisma.registrationCode.findMany({
-      where: {
-        isUsed: false
-      },
-      orderBy: { id: 'desc' } // เรียงอันที่สร้างล่าสุดขึ้นก่อน
+      orderBy: { code: 'asc' }
     });
 
+    // Map RegistrationCode fields → frontend allToken shape
     const tokens = registrationCodes.map(rc => ({
       id: rc.id,
       token: rc.code,
       isUsed: rc.isUsed,
       usedAt: rc.usedAt ?? undefined,
-      createdBy: rc.createdBy
+      //createdAt: rc.createdAt ?? new Date()
     }));
 
     res.status(200).json({
@@ -1439,63 +1385,211 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
     console.error('Error fetching tokens:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? (error as Error).message : undefined
     });
   }
 };
 
-/**
- * 3. ลบ Token ที่ยังไม่ได้ใช้งาน
- */
-export const deleteRegistrationCode = async (req: AuthRequest, res: Response) => {
+export const createToken = async (req: AuthRequest, res: Response) => {
   try {
     const counselorUserId = req.user?.userId;
-    const tokenId = parseInt(req.params.id);
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId }
     });
 
     if (!counselor || counselor.roleName !== 'counselor') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Only counselors can delete tokens.'
-      });
+      return res.status(403).json({ success: false, message: 'Access denied.' });
     }
 
-    if (isNaN(tokenId)) {
-      return res.status(400).json({ success: false, message: 'Invalid token ID' });
+    const { code } = req.body as { code: string };
+
+    if (!code || typeof code !== 'string' || code.trim() === '') {
+      return res.status(400).json({ success: false, message: 'code is required' });
     }
 
-    // ตรวจสอบว่ามี Token นี้จริงไหม และถูกใช้ไปหรือยัง
-    const existingToken = await prisma.registrationCode.findUnique({
-      where: { id: tokenId }
+    const TOKEN_REGEX = /^TK-[A-Z0-9]{6}$/;
+    if (!TOKEN_REGEX.test(code.trim())) {
+      return res.status(400).json({ success: false, message: 'Invalid token format. Expected TK-XXXXXX' });
+    }
+
+    const existing = await prisma.registrationCode.findUnique({
+      where: { code: code.trim() }
     });
 
-    if (!existingToken) {
-      return res.status(404).json({ success: false, message: 'Token not found' });
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'Token นี้มีอยู่แล้วในระบบ' });
     }
 
-    if (existingToken.isUsed) {
-      return res.status(400).json({ success: false, message: 'Cannot delete a token that has already been used' });
-    }
-
-    // ลบ Token
-    await prisma.registrationCode.delete({
-      where: { id: tokenId }
+    const newCode = await prisma.registrationCode.create({
+      data: {
+        code: code.trim(),
+        isUsed: false,
+        createdBy: counselor.cmuAccount ?? String(counselorUserId),
+      }
     });
 
-    res.status(200).json({
+    return res.status(201).json({
       success: true,
-      message: 'Token deleted successfully'
+      message: 'Token created successfully',
+      data: { id: newCode.id, token: newCode.code, isUsed: newCode.isUsed }
     });
 
   } catch (error) {
-    console.error('Error deleting token:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error'
+    console.error('Error creating token:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+// ─────────────────────────────────────────────
+// DELETE USER (hard delete หรือ soft suspend)
+// DELETE /api/counselor/users/:userId
+// ─────────────────────────────────────────────
+export const deleteUser = async (req: AuthRequest, res: Response) => {
+  try {
+    const counselorUserId = req.user?.userId;
+    const { userId } = req.params;
+    const targetId = parseInt(userId);
+
+    if (!counselorUserId || isNaN(targetId)) {
+      return res.status(400).json({ success: false, message: 'Invalid userId' });
+    }
+    if (targetId === counselorUserId) {
+      return res.status(400).json({ success: false, message: 'Cannot delete yourself' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { userId: targetId },
+      include: { clientProfile: { include: { cases: { include: { sessions: true } } } }, counselorProfile: true }
     });
+
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    await prisma.$transaction(async (tx) => {
+      // ถ้าเป็น client ต้อง cleanup cases และ sessions ก่อน
+      if (user.clientProfile) {
+        for (const c of user.clientProfile.cases) {
+          // cancel sessions ที่ booked อยู่
+          await tx.session.updateMany({
+            where: { caseId: c.caseId, status: { in: ['available', 'booked'] } },
+            data: { status: 'cancelled', caseId: null, sessionName: null, sessionToken: null }
+          });
+          // ลบ case notes (sessionHistory ของ sessions ใน case นี้)
+          const sessionIds = c.sessions.map((s: any) => s.sessionId);
+          if (sessionIds.length > 0) {
+            await tx.sessionHistory.deleteMany({ where: { sessionId: { in: sessionIds } } });
+          }
+        }
+        await tx.case.deleteMany({ where: { clientId: user.clientProfile.clientId } });
+        await tx.client.delete({ where: { userId: targetId } });
+      }
+      // ถ้าเป็น counselor ต้อง cleanup sessions ที่ available ก่อน
+      if (user.counselorProfile) {
+        await tx.session.deleteMany({ where: { counselorId: targetId, status: 'available' } });
+        await tx.counselor.delete({ where: { userId: targetId } });
+      }
+      await tx.user.delete({ where: { userId: targetId } });
+    });
+
+    return res.json({ success: true, message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('deleteUser error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete user' });
+  }
+};
+
+// ─────────────────────────────────────────────
+// ADD USER BY CMU ACCOUNT (counselor shortcut)
+// POST /api/counselor/users
+// Body: { cmuAccount, roleName, counselorNumber? }
+// ─────────────────────────────────────────────
+export const addUserByCmuAccount = async (req: AuthRequest, res: Response) => {
+  try {
+    const { cmuAccount, roleName, counselorNumber } = req.body as {
+      cmuAccount: string;
+      roleName: 'client' | 'counselor';
+      counselorNumber?: string;
+    };
+
+    if (!cmuAccount?.trim()) {
+      return res.status(400).json({ success: false, message: 'cmuAccount is required' });
+    }
+    if (!['client', 'counselor'].includes(roleName)) {
+      return res.status(400).json({ success: false, message: 'roleName must be client or counselor' });
+    }
+
+    const email = cmuAccount.trim().toLowerCase();
+
+    // ถ้ามีอยู่แล้ว ให้ return user นั้นเลย (idempotent)
+    let user = await prisma.user.findUnique({
+      where: { cmuAccount: email },
+      include: { clientProfile: true, counselorProfile: true }
+    });
+
+    if (user) {
+      // อัปเดต role ถ้าต่างกัน
+      if (user.roleName !== roleName) {
+        await prisma.user.update({ where: { userId: user.userId }, data: { roleName } });
+      }
+      // สร้าง profile ถ้ายังไม่มี
+      if (roleName === 'client' && !user.clientProfile) {
+        await prisma.client.create({
+          data: { userId: user.userId, clientId: email.split('@')[0] }
+        });
+        // set consent on User table (ไม่ใช่ Client)
+        await prisma.user.update({
+          where: { userId: user.userId },
+          data: { isConsentAccepted: true, consentAcceptedAt: new Date() }
+        });
+      }
+      if (roleName === 'counselor' && !user.counselorProfile) {
+        await prisma.counselor.create({ data: { userId: user.userId, counselorNumber: counselorNumber || null } });
+      }
+      const updated = await prisma.user.findUnique({
+        where: { userId: user.userId },
+        include: { clientProfile: true, counselorProfile: true }
+      });
+      return res.json({ success: true, message: 'User already exists, updated', data: updated });
+    }
+
+    // สร้าง user ใหม่ — ดึงชื่อจาก email prefix เป็น default
+    const namePart = email.split('@')[0];
+    user = await prisma.$transaction(async (tx) => {
+      const newUser = await tx.user.create({
+        data: {
+          cmuAccount: email,
+          firstName: namePart,
+          lastName: '',
+          roleName,
+          isConsentAccepted: roleName === 'client', // client ที่ counselor เพิ่มถือว่า bypass consent
+        },
+        include: { clientProfile: true, counselorProfile: true }
+      });
+
+      if (roleName === 'client') {
+        await tx.client.create({
+          data: { userId: newUser.userId, clientId: namePart }
+        });
+        // สร้าง confirmed case ทันที (bypass waiting)
+        await tx.case.create({
+          data: { clientId: namePart, status: 'confirmed' }
+        });
+      } else {
+        await tx.counselor.create({
+          data: { userId: newUser.userId, counselorNumber: counselorNumber || null }
+        });
+      }
+      return newUser;
+    });
+
+    const result = await prisma.user.findUnique({
+      where: { userId: user.userId },
+      include: { clientProfile: true, counselorProfile: true }
+    });
+
+    return res.status(201).json({ success: true, message: 'User created successfully', data: result });
+  } catch (error) {
+    console.error('addUserByCmuAccount error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to add user' });
   }
 };
