@@ -1328,12 +1328,71 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// ==================== REGISTRATION TOKEN MANAGEMENT ====================
+
 /**
- * Get list of registration tokens from RegistrationCode table.
- * Returns records shaped to match the frontend allToken interface:
- *   { id, token, isUsed, usedAt?, createdAt }
- * Sorting is handled client-side; the backend returns all records ordered
- * by code ascending as a stable default.
+ * 1. บันทึก Token ลง Database (หลัง Frontend สุ่มและกดยืนยัน)
+ */
+export const createRegistrationCode = async (req: AuthRequest, res: Response) => {
+  try {
+    const counselorUserId = req.user?.userId;
+    const { code } = req.body;
+
+    // Validate counselor role
+    const counselor = await prisma.user.findUnique({
+      where: { userId: counselorUserId }
+    });
+
+    if (!counselor || counselor.roleName !== 'counselor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only counselors can create tokens.'
+      });
+    }
+
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token code is required'
+      });
+    }
+
+    // เซฟลงตาราง RegistrationCode
+    const newCode = await prisma.registrationCode.create({
+      data: {
+        code: code,
+        isUsed: false,
+        createdBy: `${counselor.firstName} ${counselor.lastName}`
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Token saved successfully',
+      data: {
+        id: newCode.id,
+        token: newCode.code,
+        isUsed: newCode.isUsed
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error creating token:', error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({
+        success: false,
+        message: 'Token code already exists in database'
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+};
+
+/**
+ * 2. Get list of registration tokens (โชว์เฉพาะอันที่ยังไม่ใช้งาน - isUsed: false)
  */
 export const getTokenList = async (req: AuthRequest, res: Response) => {
   try {
@@ -1351,18 +1410,20 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Fetch all registration codes
+    // Fetch เฉพาะที่ยังไม่ได้ใช้ (isUsed: false)
     const registrationCodes = await prisma.registrationCode.findMany({
-      orderBy: { code: 'asc' }
+      where: {
+        isUsed: false
+      },
+      orderBy: { id: 'desc' } // เรียงอันที่สร้างล่าสุดขึ้นก่อน
     });
 
-    // Map RegistrationCode fields → frontend allToken shape
     const tokens = registrationCodes.map(rc => ({
       id: rc.id,
       token: rc.code,
       isUsed: rc.isUsed,
       usedAt: rc.usedAt ?? undefined,
-      //createdAt: rc.createdAt ?? new Date()
+      createdBy: rc.createdBy
     }));
 
     res.status(200).json({
@@ -1378,8 +1439,63 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
     console.error('Error fetching tokens:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? (error as Error).message : undefined
+      message: 'Internal server error'
+    });
+  }
+};
+
+/**
+ * 3. ลบ Token ที่ยังไม่ได้ใช้งาน
+ */
+export const deleteRegistrationCode = async (req: AuthRequest, res: Response) => {
+  try {
+    const counselorUserId = req.user?.userId;
+    const tokenId = parseInt(req.params.id);
+
+    // Validate counselor role
+    const counselor = await prisma.user.findUnique({
+      where: { userId: counselorUserId }
+    });
+
+    if (!counselor || counselor.roleName !== 'counselor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only counselors can delete tokens.'
+      });
+    }
+
+    if (isNaN(tokenId)) {
+      return res.status(400).json({ success: false, message: 'Invalid token ID' });
+    }
+
+    // ตรวจสอบว่ามี Token นี้จริงไหม และถูกใช้ไปหรือยัง
+    const existingToken = await prisma.registrationCode.findUnique({
+      where: { id: tokenId }
+    });
+
+    if (!existingToken) {
+      return res.status(404).json({ success: false, message: 'Token not found' });
+    }
+
+    if (existingToken.isUsed) {
+      return res.status(400).json({ success: false, message: 'Cannot delete a token that has already been used' });
+    }
+
+    // ลบ Token
+    await prisma.registrationCode.delete({
+      where: { id: tokenId }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Token deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting token:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
     });
   }
 };

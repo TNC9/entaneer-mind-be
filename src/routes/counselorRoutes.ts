@@ -13,7 +13,9 @@ import {
   getAllCounselors,
   // Report & Analytics
   getFullReport,
-  getTokenList
+  getTokenList,
+  createRegistrationCode,
+  deleteRegistrationCode
 } from '../controllers/counselorController';
 
 const router = express.Router();
@@ -51,7 +53,15 @@ router.get('/api/counselor/counselors', authenticateToken, requireCounselor, get
 // Get full report with date range
 router.get('/api/counselor/report', authenticateToken, requireCounselor, getFullReport);
 
-// Get queue token list (sortable)
+// ==================== TOKEN MANAGEMENT ====================
+
+// สร้าง Token ใหม่ (เมื่อกดยืนยัน)
+router.post('/api/counselor/tokens', authenticateToken, requireCounselor, createRegistrationCode);
+
+// ดึงรายการ Token ที่ยังไม่ได้ใช้งาน
 router.get('/api/counselor/tokens', authenticateToken, requireCounselor, getTokenList);
+
+// ลบ Token 
+router.delete('/api/counselor/tokens/:id', authenticateToken, requireCounselor, deleteRegistrationCode);
 
 export default router;
