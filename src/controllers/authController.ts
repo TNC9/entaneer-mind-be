@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../prisma';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
+import { AuthRequest } from '../middleware/authMiddleware';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret-key-sud-yod';
 
@@ -64,13 +65,24 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    let hasActiveCase = false;
+    if (user.roleName === 'client' && user.clientProfile) {
+      const activeCase = await prisma.case.findFirst({
+        where: {
+          clientId: user.clientProfile.clientId,
+          status: { in: ['waiting_confirmation', 'confirmed', 'in_progress'] }
+        }
+      });
+      hasActiveCase = !!activeCase;
+    }
+
     const token = jwt.sign(
       { userId: user.userId, role: user.roleName, cmuAccount: user.cmuAccount },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.status(200).json({ message: 'Login successful', token, user });
+    res.status(200).json({ message: 'Login successful', token, user, hasActiveCase });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -113,9 +125,9 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
     const cmuData = userResponse.data; 
     const email = cmuData.cmuitaccount;
 
-    // ---------------------------------------------------------
-    // 💡 1. Logic ดึงข้อมูล เพศ, รหัสนศ, คณะ ตามที่คุณออกแบบไว้
-    // ---------------------------------------------------------
+// ---------------------------------------------------------
+// 4. Logic ดึงข้อมูล เพศ, รหัสนศ, คณะ
+// ---------------------------------------------------------
     
     // แปลงเพศ (Gender)
     const prename = (cmuData.prename_EN || cmuData.prename_id || '').toUpperCase();
@@ -197,5 +209,48 @@ export const cmuCallback = async (req: Request, res: Response): Promise<void> =>
   } catch (error) {
     console.error('CMU Login Error:', error);
     res.status(500).send('Authentication Failed');
+  }
+};
+
+// ------------------------------------------
+// 4. GET ME (ดึงข้อมูลตัวเอง + เช็คว่ามี Case หรือยัง)
+// ------------------------------------------
+export const getMe = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { userId },
+      include: { clientProfile: true, counselorProfile: true }
+    });
+
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    // เช็คว่ามี Case ที่กำลังดำเนินการอยู่ไหม
+    let hasActiveCase = false;
+    if (user.roleName === 'client' && user.clientProfile) {
+      const activeCase = await prisma.case.findFirst({
+        where: {
+          clientId: user.clientProfile.clientId,
+          status: { in: ['waiting_confirmation', 'confirmed', 'in_progress'] }
+        }
+      });
+      hasActiveCase = !!activeCase;
+    }
+
+    res.status(200).json({
+      user,
+      hasActiveCase // 👈 ตัวนี้แหละพระเอกของเรา!
+    });
+  } catch (error) {
+    console.error('getMe error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
