@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import { AuthRequest } from '../middleware/authMiddleware';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'secret-key-sud-yod';
+const JWT_SECRET = process.env.JWT_SECRET as string;
 
 // ------------------------------------------
 // 1. REGISTER (สมัครสมาชิกแบบกรอกเอง)

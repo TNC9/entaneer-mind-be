@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../prisma';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'secret-key-sud-yod';
+const JWT_SECRET = process.env.JWT_SECRET as string;
 
 export interface AuthenticatedUser {
   userId: number;
