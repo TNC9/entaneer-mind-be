@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import nodemailer from "nodemailer";
 import { prisma } from "../prisma";
@@ -5,8 +6,6 @@ import type { AuthRequest } from "../middleware/authMiddleware";
 
 /** Helpers */
 function bangkokDayRangeUTC(dateYYYYMMDD: string): { start: Date; end: Date } {
-  // Interpret date as Bangkok local day
-  // Start: 00:00+07:00, End: next day 00:00+07:00
   const start = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
   const end = new Date(`${dateYYYYMMDD}T00:00:00+07:00`);
   end.setDate(end.getDate() + 1);
@@ -40,6 +39,94 @@ function buildMailer() {
     secure: port === 465,
     auth: { user, pass },
   });
+}
+
+function isUniqueConstraintError(err: unknown, fieldName: string): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (err.code !== "P2002") return false;
+
+  const target = err.meta?.target;
+
+  if (Array.isArray(target)) {
+    return target.includes(fieldName);
+  }
+
+  if (typeof target === "string") {
+    return target === fieldName;
+  }
+
+  return false;
+}
+
+async function getNextSessionToken(
+  caseToken: string,
+  tx: Prisma.TransactionClient
+): Promise<string> {
+  const rows = await tx.session.findMany({
+    where: {
+      sessionToken: {
+        startsWith: `${caseToken}-`,
+      },
+    },
+    select: {
+      sessionToken: true,
+    },
+  });
+
+  let maxSeq = 0;
+  const regex = new RegExp(`^${caseToken}-(\\d+)$`);
+
+  for (const row of rows) {
+    const token = row.sessionToken ?? "";
+    const match = token.match(regex);
+    if (!match) continue;
+
+    const seq = Number(match[1]);
+    if (!Number.isNaN(seq) && seq > maxSeq) {
+      maxSeq = seq;
+    }
+  }
+
+  return `${caseToken}-${String(maxSeq + 1).padStart(3, "0")}`;
+}
+
+async function getOrGenerateQueueToken(
+  caseId: number,
+  tx: Prisma.TransactionClient
+): Promise<string> {
+  const currentCase = await tx.case.findUnique({
+    where: { caseId },
+    select: { queueToken: true },
+  });
+
+  if (currentCase?.queueToken) return currentCase.queueToken;
+
+  const now = new Date();
+  const thaiYear = now.getFullYear() + 543;
+  const yearPrefix = thaiYear.toString().slice(-2);
+
+  const lastCase = await tx.case.findFirst({
+    where: { queueToken: { startsWith: yearPrefix } },
+    orderBy: { queueToken: "desc" },
+    select: { queueToken: true },
+  });
+
+  let nextNumber = 1;
+  if (lastCase?.queueToken) {
+    const lastNumber = parseInt(lastCase.queueToken.slice(2), 10);
+    if (!Number.isNaN(lastNumber)) {
+      nextNumber = lastNumber + 1;
+    }
+  }
+
+  const newToken = `${yearPrefix}${nextNumber.toString().padStart(4, "0")}`;
+
+  await tx.case.update({
+    where: { caseId },
+    data: { queueToken: newToken },
+  });
+
+  return newToken;
 }
 
 /**
@@ -124,12 +211,28 @@ export async function listSessions(req: Request, res: Response) {
 
     const sessions = await prisma.session.findMany({
       where: {
-        roomId,
-        timeStart: { gte: start, lt: end },
+        roomId: Number(roomId),
+        timeStart: {
+          gte: start,
+          lt: end,
+        },
+        status: {
+          not: 'closed',
+        },
       },
-      orderBy: [{ timeStart: "asc" }, { sessionId: "asc" }],
+      orderBy: {
+        timeStart: 'asc',
+      },
       include: {
-        counselor: { include: { user: true } },
+        room: {
+          include: {
+            counselor: {
+              include: {
+                user: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -137,19 +240,17 @@ export async function listSessions(req: Request, res: Response) {
       ? `${room.counselor.user.firstName} ${room.counselor.user.lastName}`
       : null;
 
-    const slots = sessions
-      .filter((s) => !!s.timeStart)
-      .map((s) => ({
-        sessionId: s.sessionId,
-        timeStart: s.timeStart!.toISOString(),
-        time: formatTimeHHmmBangkok(s.timeStart!),
-        available: (s.status || "").toLowerCase() === "available",
-        counselor: counselorName ?? room.roomName,
-        counselorEmail:
-          s.counselor?.user?.cmuAccount ??
-          room.counselor?.user?.cmuAccount ??
-          null,
-      }));
+    const slots = sessions.map((session) => ({
+      sessionId: session.sessionId,
+      timeStart: session.timeStart,
+      formattedTime: session.timeStart
+        ? formatTimeHHmmBangkok(session.timeStart)
+        : '',
+      available: session.status === 'available',
+      status: session.status,
+      counselor: session.counselorId,
+      counselorEmail: session.room?.counselor?.user?.cmuAccount ?? null,
+    }));
 
     return res.json({
       date,
@@ -199,16 +300,15 @@ export async function bookSession(req: AuthRequest, res: Response) {
       return res.status(400).json({ message: "phone must be 10 digits" });
     }
 
-    // 1) Load User + Client Profile
     const user = await prisma.user.findUnique({
       where: { userId },
       include: { clientProfile: true },
     });
+
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // 2) Flexible client profile creation (supports students and staff)
     let client = user.clientProfile;
     if (!client) {
       const newClientId =
@@ -222,7 +322,6 @@ export async function bookSession(req: AuthRequest, res: Response) {
       });
     }
 
-    // Update phone if new value provided
     if (phone && phone.trim() !== "" && (user.phoneNum || "") !== phone) {
       await prisma.user.update({
         where: { userId: user.userId },
@@ -230,8 +329,7 @@ export async function bookSession(req: AuthRequest, res: Response) {
       });
     }
 
-    // 3) Only reuse active cases
-    let latestCase = await prisma.case.findFirst({
+    let activeCase = await prisma.case.findFirst({
       where: {
         clientId: client.clientId,
         status: { in: ["waiting_confirmation", "confirmed", "in_progress"] },
@@ -239,8 +337,8 @@ export async function bookSession(req: AuthRequest, res: Response) {
       orderBy: { createdAt: "desc" },
     });
 
-    if (!latestCase) {
-      latestCase = await prisma.case.create({
+    if (!activeCase) {
+      activeCase = await prisma.case.create({
         data: {
           clientId: client.clientId,
           status: "waiting_confirmation",
@@ -248,104 +346,141 @@ export async function bookSession(req: AuthRequest, res: Response) {
       });
     }
 
-    // 4) Booking transaction
-    const result = await prisma.$transaction(async (tx) => {
-      const session = await tx.session.findUnique({
-        where: { sessionId },
-        include: {
-          room: {
-            include: {
-              counselor: {
-                include: {
-                  user: true,
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const session = await tx.session.findUnique({
+          where: { sessionId },
+          include: {
+            room: {
+              include: {
+                counselor: {
+                  include: {
+                    user: true,
+                  },
                 },
               },
             },
-          },
-          counselor: {
-            include: {
-              user: true,
+            counselor: {
+              include: {
+                user: true,
+              },
             },
           },
-        },
-      });
-
-      if (!session || !session.timeStart) {
-        return { ok: false as const, status: 404, message: "Session not found" };
-      }
-
-      const caseToken = await getOrGenerateQueueToken(latestCase.caseId, tx);
-      const sessionCount = await tx.session.count({
-        where: { caseId: latestCase.caseId }
-      });
-      const sessionToken = `${caseToken}-${(sessionCount + 1).toString().padStart(3, "0")}`;
-
-      // เปลี่ยนชื่อในช่องนัดหมายจาก รหัสนศ. เป็น ชื่อ-นามสกุล จริง
-      const sessionNameStr = `${user.firstName} ${user.lastName}`;
-      const targetCounselorId = session.room?.counselorId ?? session.counselorId ?? null;
-
-      const updated = await tx.session.updateMany({
-        where: { sessionId, status: "available" },
-        data: {
-          status: "booked",
-          sessionName: sessionNameStr,
-          caseId: latestCase.caseId,
-          sessionToken: sessionToken,
-        },
-      });
-
-      if (updated.count !== 1) {
-        return { ok: false as const, status: 409, message: "Session already booked" };
-      }
-
-      // อัปเดตให้ Case รู้ว่าใครคือ Counselor ที่รับผิดชอบ
-      if (session.counselorId && !latestCase!.counselorId) {
-        await tx.case.update({
-          where: { caseId: latestCase!.caseId },
-          data: { counselorId: session.counselorId }
         });
-      }
-      const counselorName =
-        session.room?.counselor?.user
+
+        if (!session || !session.timeStart) {
+          return { ok: false as const, status: 404, message: "Session not found" };
+        }
+
+        if ((session.status || "").toLowerCase() !== "available") {
+          return { ok: false as const, status: 409, message: "Session already booked" };
+        }
+
+        const caseToken = await getOrGenerateQueueToken(activeCase.caseId, tx);
+        const sessionNameStr = client.clientId;
+        const targetCounselorId =
+          session.room?.counselorId ?? session.counselorId ?? null;
+
+        let assignedSessionToken: string | null = null;
+        let booked = false;
+
+        for (let attempt = 0; attempt < 5; attempt++) {
+          assignedSessionToken = await getNextSessionToken(caseToken, tx);
+
+          try {
+            const updated = await tx.session.updateMany({
+              where: {
+                sessionId,
+                status: "available",
+              },
+              data: {
+                status: "booked",
+                sessionName: sessionNameStr,
+                caseId: activeCase.caseId,
+                sessionToken: assignedSessionToken,
+                counselorId: targetCounselorId,
+              },
+            });
+
+            if (updated.count === 1) {
+              booked = true;
+              break;
+            }
+
+            return {
+              ok: false as const,
+              status: 409,
+              message: "Session already booked",
+            };
+          } catch (err) {
+            if (isUniqueConstraintError(err, "sessionToken")) {
+              assignedSessionToken = null;
+              continue;
+            }
+            throw err;
+          }
+        }
+
+        if (!booked || !assignedSessionToken) {
+          return {
+            ok: false as const,
+            status: 500,
+            message: "Could not allocate unique session token",
+          };
+        }
+
+        if (targetCounselorId && !activeCase.counselorId) {
+          await tx.case.update({
+            where: { caseId: activeCase.caseId },
+            data: { counselorId: targetCounselorId },
+          });
+        }
+
+        const counselorName = session.room?.counselor?.user
           ? `${session.room.counselor.user.firstName} ${session.room.counselor.user.lastName}`
-          : null;
+          : session.counselor?.user
+            ? `${session.counselor.user.firstName} ${session.counselor.user.lastName}`
+            : null;
 
-      await tx.sessionHistory.create({
-        data: {
-          sessionId,
-          action: "CLIENT_BOOKED",
-          details: JSON.stringify({
-            studentId: studentId ?? client.clientId,
-            phone: phone ?? user.phoneNum ?? "",
-            description: description ?? "",
-            googleEventId: googleEventId ?? null,
-            roomName: session.room?.roomName ?? null,
-            counselorName,
-            timeStart: session.timeStart.toISOString(),
-          }),
-          editedBy: user.userId,
-        },
-      });
+        await tx.sessionHistory.create({
+          data: {
+            sessionId,
+            action: "CLIENT_BOOKED",
+            details: JSON.stringify({
+              studentId: studentId ?? client.clientId,
+              phone: phone ?? user.phoneNum ?? "",
+              description: description ?? "",
+              googleEventId: googleEventId ?? null,
+              roomName: session.room?.roomName ?? null,
+              counselorName,
+              timeStart: session.timeStart.toISOString(),
+            }),
+            editedBy: user.userId,
+          },
+        });
 
-      return {
-        ok: true as const,
-        roomName: session.room?.roomName ?? "ห้อง",
-        counselorName,
-        counselorEmail:
-          session.counselor?.user?.cmuAccount ??
-          session.room?.counselor?.user?.cmuAccount ??
-          null,
-        timeStartISO: session.timeStart.toISOString(),
-        timeHHmm: formatTimeHHmmBangkok(session.timeStart),
-        caseId: latestCase.caseId,
-      };
-    });
+        return {
+          ok: true as const,
+          roomName: session.room?.roomName ?? "ห้อง",
+          counselorName,
+          counselorEmail:
+            session.counselor?.user?.cmuAccount ??
+            session.room?.counselor?.user?.cmuAccount ??
+            null,
+          timeStartISO: session.timeStart.toISOString(),
+          timeHHmm: formatTimeHHmmBangkok(session.timeStart),
+          caseId: activeCase.caseId,
+        };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      }
+    );
 
     if (!result.ok) {
       return res.status(result.status).json({ message: result.message });
     }
 
-    // Optional email to client (only if SMTP env exists)
     const mailer = buildMailer();
     if (mailer) {
       const from = process.env.MAIL_FROM ?? process.env.SMTP_USER!;
@@ -378,42 +513,15 @@ export async function bookSession(req: AuthRequest, res: Response) {
       counselorName: result.counselorName,
       roomName: result.roomName,
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error("bookSession error:", err);
-    return res.status(500).json({ message: "Booking failed" });
-  }
-}
 
-async function getOrGenerateQueueToken(caseId: number, tx: any) {
-  const currentCase = await tx.case.findUnique({
-    where: { caseId },
-  });
-
-  if (currentCase?.queueToken) return currentCase.queueToken;
-
-  const now = new Date();
-  const thaiYear = now.getFullYear() + 543;
-  const yearPrefix = thaiYear.toString().slice(-2);
-
-  const lastCase = await tx.case.findFirst({
-    where: { queueToken: { startsWith: yearPrefix } },
-    orderBy: { queueToken: "desc" },
-  });
-
-  let nextNumber = 1;
-  if (lastCase?.queueToken) {
-    const lastNumber = parseInt(lastCase.queueToken.slice(2), 10);
-    if (!Number.isNaN(lastNumber)) {
-      nextNumber = lastNumber + 1;
+    if (err?.message === "Session already booked") {
+      return res.status(409).json({ message: "Session already booked" });
     }
+
+    return res.status(500).json({
+      message: err?.message || "Booking failed",
+    });
   }
-
-  const newToken = `${yearPrefix}${nextNumber.toString().padStart(4, "0")}`;
-
-  await tx.case.update({
-    where: { caseId },
-    data: { queueToken: newToken },
-  });
-
-  return newToken;
 }

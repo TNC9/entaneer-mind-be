@@ -2,7 +2,6 @@ import { Response } from 'express';
 import { prisma } from '../prisma';
 import { AuthRequest } from '../middleware/authMiddleware';
 
-
 // ==================== HELPER FUNCTIONS ====================
 
 /**
@@ -14,24 +13,52 @@ const isValidSessionTime = (timeStart: Date): boolean => {
   const hours = timeStart.getUTCHours(); // UTC time
   const minutes = timeStart.getUTCMinutes(); // UTC time
 
-  // Must start at the top of the hour (minutes = 0)
   if (minutes !== 0) return false;
 
-  // Must be between 9:00 and 15:00 (last slot ends at 16:00)
   return hours >= 9 && hours <= 15;
+};
+
+/**
+ * Queue token format example: 690001, 690002, ...
+ * Uses Thai year last 2 digits as prefix.
+ */
+const generateCaseQueueToken = async (db: typeof prisma): Promise<string> => {
+  const thaiYear = new Date().getFullYear() + 543;
+  const prefix = String(thaiYear).slice(-2);
+
+  const lastCase = await db.case.findFirst({
+    where: {
+      queueToken: {
+        startsWith: prefix
+      }
+    },
+    orderBy: {
+      queueToken: 'desc'
+    },
+    select: {
+      queueToken: true
+    }
+  });
+
+  const lastRunning =
+    lastCase?.queueToken && lastCase.queueToken.startsWith(prefix)
+      ? parseInt(lastCase.queueToken.slice(2), 10)
+      : 0;
+
+  const nextRunning = Number.isNaN(lastRunning) ? 1 : lastRunning + 1;
+  return `${prefix}${String(nextRunning).padStart(4, '0')}`;
 };
 
 // ==================== SLOT MANAGEMENT ====================
 
 /**
- * Create available time slot for counselor (60 minutes, 15:00-16:00 only)
+ * Create available time slot for counselor (60 minutes)
  */
 export const createSlot = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
     const { timeStart, roomId, sessionName } = req.body;
 
-    // Validate counselor role
     const user = await prisma.user.findUnique({
       where: { userId },
       include: { counselorProfile: true }
@@ -44,7 +71,6 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Validate required fields
     if (!timeStart) {
       return res.status(400).json({
         success: false,
@@ -52,7 +78,6 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Parse and validate time
     const startTime = new Date(timeStart);
     if (isNaN(startTime.getTime())) {
       return res.status(400).json({
@@ -61,16 +86,15 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Validate session time (09:00 - 16:00, last slot 15:00-16:00)
     if (!isValidSessionTime(startTime)) {
       return res.status(400).json({
         success: false,
-        message: 'Sessions can only be created between 09:00 - 16:00. Sessions must start at the top of the hour (9:00, 10:00, 11:00, etc.). Last slot is 15:00 - 16:00.',
+        message:
+          'Sessions can only be created between 09:00 - 16:00. Sessions must start at the top of the hour (9:00, 10:00, 11:00, etc.). Last slot is 15:00 - 16:00.',
         allowedTimes: '09:00, 10:00, 11:00, 12:00, 13:00, 14:00, 15:00'
       });
     }
 
-    // Check if time is in the past
     if (startTime < new Date()) {
       return res.status(400).json({
         success: false,
@@ -78,10 +102,8 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Calculate end time (60 minutes from start)
     const endTime = new Date(startTime.getTime() + 60 * 60 * 1000);
 
-    // Validate room if provided
     if (roomId) {
       const room = await prisma.room.findUnique({
         where: { roomId: parseInt(roomId) }
@@ -102,28 +124,18 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Check for overlapping slots
     const overlappingSlot = await prisma.session.findFirst({
       where: {
         counselorId: userId,
         OR: [
           {
-            AND: [
-              { timeStart: { lte: startTime } },
-              { timeEnd: { gt: startTime } }
-            ]
+            AND: [{ timeStart: { lte: startTime } }, { timeEnd: { gt: startTime } }]
           },
           {
-            AND: [
-              { timeStart: { lt: endTime } },
-              { timeEnd: { gte: endTime } }
-            ]
+            AND: [{ timeStart: { lt: endTime } }, { timeEnd: { gte: endTime } }]
           },
           {
-            AND: [
-              { timeStart: { gte: startTime } },
-              { timeEnd: { lte: endTime } }
-            ]
+            AND: [{ timeStart: { gte: startTime } }, { timeEnd: { lte: endTime } }]
           }
         ]
       }
@@ -141,7 +153,6 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Create the session slot
     const session = await prisma.session.create({
       data: {
         sessionName: sessionName || 'Available Slot',
@@ -165,15 +176,16 @@ export const createSlot = async (req: AuthRequest, res: Response) => {
         sessionName: session.sessionName,
         timeStart: session.timeStart,
         timeEnd: session.timeEnd,
-        room: session.room ? {
-          roomId: session.room.roomId,
-          roomName: session.room.roomName
-        } : null,
+        room: session.room
+          ? {
+              roomId: session.room.roomId,
+              roomName: session.room.roomName
+            }
+          : null,
         status: session.status,
         duration: '60 minutes'
       }
     });
-
   } catch (error) {
     console.error('Error creating slot:', error);
     res.status(500).json({
@@ -192,7 +204,6 @@ export const getCounselorSchedule = async (req: AuthRequest, res: Response) => {
     const userId = req.user?.userId;
     const { status, startDate, endDate } = req.query;
 
-    // Validate counselor role
     const user = await prisma.user.findUnique({
       where: { userId },
       include: { counselorProfile: true }
@@ -205,18 +216,14 @@ export const getCounselorSchedule = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Build filter conditions
     const whereConditions: any = {
       counselorId: userId
     };
 
-    // Filter by status if provided
     if (status && typeof status === 'string') {
       whereConditions.status = status;
     }
 
-    // Filter by date range if provided
-    // Filter by date range if provided (date-only, same as getFullReport)
     if (startDate || endDate) {
       whereConditions.timeStart = {};
 
@@ -237,7 +244,6 @@ export const getCounselorSchedule = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Fetch sessions with related case and client info
     const sessions = await prisma.session.findMany({
       where: whereConditions,
       include: {
@@ -265,46 +271,48 @@ export const getCounselorSchedule = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    // Format response
-    const formattedSessions = sessions.map(session => ({
+    const formattedSessions = sessions.map((session) => ({
       sessionId: session.sessionId,
       sessionName: session.sessionName,
       sessionToken: session.sessionToken,
       timeStart: session.timeStart,
       timeEnd: session.timeEnd,
-      room: session.room ? {
-        roomId: session.room.roomId,
-        roomName: session.room.roomName
-      } : null,
+      room: session.room
+        ? {
+            roomId: session.room.roomId,
+            roomName: session.room.roomName
+          }
+        : null,
       status: session.status,
       duration: '60 minutes',
       createdAt: session.createdAt,
-      problemTags: session.problemTags.map(tag => tag.label),
-      case: session.case ? {
-        caseId: session.case.caseId,
-        status: session.case.status,
-        priority: session.case.priority,
-        queueToken: session.case.queueToken,
-        client: {
-          clientId: session.case.client.clientId,
-          name: `${session.case.client.user.firstName} ${session.case.client.user.lastName}`,
-          cmuAccount: session.case.client.user.cmuAccount,
-          major: session.case.client.major,
-          department: session.case.client.department
-        }
-      } : null,
+      problemTags: session.problemTags.map((tag) => tag.label),
+      case: session.case
+        ? {
+            caseId: session.case.caseId,
+            status: session.case.status,
+            priority: session.case.priority,
+            queueToken: session.case.queueToken,
+            client: {
+              clientId: session.case.client.clientId,
+              name: `${session.case.client.user.firstName} ${session.case.client.user.lastName}`.trim(),
+              cmuAccount: session.case.client.user.cmuAccount,
+              major: session.case.client.major,
+              department: session.case.client.department
+            }
+          }
+        : null,
       counselorNote: session.counselorNote,
       counselorKeyword: session.counselorKeyword,
       moodScale: session.moodScale
     }));
 
-    // Calculate statistics
     const stats = {
       total: sessions.length,
-      available: sessions.filter(s => s.status === 'available').length,
-      booked: sessions.filter(s => s.status === 'booked').length,
-      completed: sessions.filter(s => s.status === 'completed').length,
-      cancelled: sessions.filter(s => s.status === 'cancelled').length
+      available: sessions.filter((s) => s.status === 'available').length,
+      booked: sessions.filter((s) => s.status === 'booked').length,
+      completed: sessions.filter((s) => s.status === 'completed').length,
+      cancelled: sessions.filter((s) => s.status === 'cancelled').length
     };
 
     res.status(200).json({
@@ -321,7 +329,6 @@ export const getCounselorSchedule = async (req: AuthRequest, res: Response) => {
         sessions: formattedSessions
       }
     });
-
   } catch (error) {
     console.error('Error fetching schedule:', error);
     res.status(500).json({
@@ -340,7 +347,6 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
     const userId = req.user?.userId;
     const sessionId = parseInt(req.params.sessionId);
 
-    // Validate counselor role
     const user = await prisma.user.findUnique({
       where: { userId },
       include: { counselorProfile: true }
@@ -360,7 +366,6 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if session exists
     const session = await prisma.session.findUnique({
       where: { sessionId },
       include: {
@@ -389,7 +394,6 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check ownership
     if (session.counselorId !== userId) {
       return res.status(403).json({
         success: false,
@@ -397,20 +401,19 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if session is available
     if (session.status !== 'available') {
       return res.status(400).json({
         success: false,
         message: `Cannot delete slot with status: ${session.status}`,
-        reason: session.status === 'booked'
-          ? 'This slot is already booked by a client'
-          : session.status === 'completed'
+        reason:
+          session.status === 'booked'
+            ? 'This slot is already booked by a client'
+            : session.status === 'completed'
             ? 'This slot has been completed'
             : 'This slot cannot be deleted'
       });
     }
 
-    // Check if slot is in the past
     if (session.timeStart && session.timeStart < new Date()) {
       return res.status(400).json({
         success: false,
@@ -418,7 +421,6 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Delete the session
     await prisma.session.delete({
       where: { sessionId }
     });
@@ -433,7 +435,6 @@ export const deleteSlot = async (req: AuthRequest, res: Response) => {
         timeEnd: session.timeEnd
       }
     });
-
   } catch (error) {
     console.error('Error deleting slot:', error);
     res.status(500).json({
@@ -453,7 +454,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
     const sessionId = parseInt(req.params.sessionId);
     const { timeStart, roomId, sessionName } = req.body;
 
-    // Validate counselor role
     const user = await prisma.user.findUnique({
       where: { userId },
       include: { counselorProfile: true }
@@ -473,7 +473,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if session exists
     const session = await prisma.session.findUnique({
       where: { sessionId }
     });
@@ -485,7 +484,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check ownership
     if (session.counselorId !== userId) {
       return res.status(403).json({
         success: false,
@@ -493,7 +491,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if session is available
     if (session.status !== 'available') {
       return res.status(400).json({
         success: false,
@@ -501,10 +498,8 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Prepare update data
     const updateData: any = {};
 
-    // Update time if provided
     if (timeStart) {
       const newStartTime = new Date(timeStart);
 
@@ -515,11 +510,11 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      // Validate session time (09:00 - 16:00, last slot 15:00-16:00)
       if (!isValidSessionTime(newStartTime)) {
         return res.status(400).json({
           success: false,
-          message: 'Sessions can only be scheduled between 09:00 - 16:00. Sessions must start at the top of the hour. Last slot is 15:00 - 16:00.',
+          message:
+            'Sessions can only be scheduled between 09:00 - 16:00. Sessions must start at the top of the hour. Last slot is 15:00 - 16:00.',
           allowedTimes: '09:00, 10:00, 11:00, 12:00, 13:00, 14:00, 15:00'
         });
       }
@@ -531,7 +526,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      // Check for overlaps
       const newEndTime = new Date(newStartTime.getTime() + 60 * 60 * 1000);
 
       const overlappingSlot = await prisma.session.findFirst({
@@ -540,22 +534,13 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
           sessionId: { not: sessionId },
           OR: [
             {
-              AND: [
-                { timeStart: { lte: newStartTime } },
-                { timeEnd: { gt: newStartTime } }
-              ]
+              AND: [{ timeStart: { lte: newStartTime } }, { timeEnd: { gt: newStartTime } }]
             },
             {
-              AND: [
-                { timeStart: { lt: newEndTime } },
-                { timeEnd: { gte: newEndTime } }
-              ]
+              AND: [{ timeStart: { lt: newEndTime } }, { timeEnd: { gte: newEndTime } }]
             },
             {
-              AND: [
-                { timeStart: { gte: newStartTime } },
-                { timeEnd: { lte: newEndTime } }
-              ]
+              AND: [{ timeStart: { gte: newStartTime } }, { timeEnd: { lte: newEndTime } }]
             }
           ]
         }
@@ -572,7 +557,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       updateData.timeEnd = newEndTime;
     }
 
-    // Update room if provided
     if (roomId !== undefined) {
       if (roomId) {
         const room = await prisma.room.findUnique({
@@ -599,12 +583,10 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Update sessionName if provided
     if (sessionName !== undefined) {
       updateData.sessionName = sessionName;
     }
 
-    // Check if there's anything to update
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json({
         success: false,
@@ -612,7 +594,6 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Update the session
     const updatedSession = await prisma.session.update({
       where: { sessionId },
       data: updateData,
@@ -627,21 +608,224 @@ export const updateSlot = async (req: AuthRequest, res: Response) => {
         sessionName: updatedSession.sessionName,
         timeStart: updatedSession.timeStart,
         timeEnd: updatedSession.timeEnd,
-        room: updatedSession.room ? {
-          roomId: updatedSession.room.roomId,
-          roomName: updatedSession.room.roomName
-        } : null,
+        room: updatedSession.room
+          ? {
+              roomId: updatedSession.room.roomId,
+              roomName: updatedSession.room.roomName
+            }
+          : null,
         status: updatedSession.status,
         duration: '60 minutes'
       }
     });
-
   } catch (error) {
     console.error('Error updating slot:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? (error as Error).message : undefined
+    });
+  }
+};
+
+// ==================== WAITING CASE MANAGEMENT ====================
+
+/**
+ * Get waiting cases from Case table
+ */
+export const getWaitingCases = async (req: AuthRequest, res: Response) => {
+  try {
+    const counselorUserId = req.user?.userId;
+
+    const counselor = await prisma.user.findUnique({
+      where: { userId: counselorUserId }
+    });
+
+    if (!counselor || counselor.roleName !== 'counselor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only counselors can view waiting cases.'
+      });
+    }
+
+    const waitingCases = await prisma.case.findMany({
+      where: {
+        status: 'waiting_confirmation'
+      },
+      include: {
+        client: {
+          include: {
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                cmuAccount: true,
+                phoneNum: true
+              }
+            }
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'asc'
+      }
+    });
+
+    const formattedCases = waitingCases.map((c) => ({
+      caseId: c.caseId,
+      status: c.status,
+      priority: c.priority,
+      queueToken: c.queueToken,
+      waitingSince: c.waitingEnteredAt ?? c.createdAt,
+      createdAt: c.createdAt,
+      confirmedAt: c.confirmedAt,
+      counselorId: c.counselorId,
+      client: {
+        clientId: c.client.clientId,
+        name: `${c.client.user.firstName} ${c.client.user.lastName}`.trim(),
+        cmuAccount: c.client.user.cmuAccount,
+        phoneNum: c.client.user.phoneNum,
+        major: c.client.major,
+        department: c.client.department
+      }
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: 'Waiting cases retrieved successfully',
+      data: {
+        total: formattedCases.length,
+        cases: formattedCases
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching waiting cases:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+};
+
+/**
+ * Confirm waiting case -> set status confirmed + confirmedAt + queueToken
+ */
+export const confirmWaitingCase = async (req: AuthRequest, res: Response) => {
+  try {
+    const counselorUserId = req.user?.userId;
+    const caseId = parseInt(req.params.caseId);
+
+    if (!counselorUserId || isNaN(caseId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid caseId'
+      });
+    }
+
+    const counselor = await prisma.user.findUnique({
+      where: { userId: counselorUserId }
+    });
+
+    if (!counselor || counselor.roleName !== 'counselor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only counselors can confirm waiting cases.'
+      });
+    }
+
+    const updatedCase = await prisma.$transaction(async (tx) => {
+      const existingCase = await tx.case.findUnique({
+        where: { caseId },
+        include: {
+          client: {
+            include: {
+              user: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  cmuAccount: true,
+                  phoneNum: true
+                }
+              }
+            }
+          }
+        }
+      });
+
+      if (!existingCase) {
+        throw new Error('CASE_NOT_FOUND');
+      }
+
+      if (existingCase.status !== 'waiting_confirmation') {
+        throw new Error('CASE_NOT_WAITING');
+      }
+
+      const queueToken = existingCase.queueToken || (await generateCaseQueueToken(tx as any));
+
+      return tx.case.update({
+        where: { caseId },
+        data: {
+          status: 'confirmed',
+          queueToken,
+          confirmedAt: new Date(),
+          counselorId: existingCase.counselorId ?? counselorUserId,
+          waitingEnteredAt: existingCase.waitingEnteredAt ?? existingCase.createdAt
+        },
+        include: {
+          client: {
+            include: {
+              user: {
+                select: {
+                  firstName: true,
+                  lastName: true,
+                  cmuAccount: true,
+                  phoneNum: true
+                }
+              }
+            }
+          }
+        }
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Case confirmed successfully',
+      data: {
+        caseId: updatedCase.caseId,
+        status: updatedCase.status,
+        queueToken: updatedCase.queueToken,
+        confirmedAt: updatedCase.confirmedAt,
+        counselorId: updatedCase.counselorId,
+        client: {
+          clientId: updatedCase.client.clientId,
+          name: `${updatedCase.client.user.firstName} ${updatedCase.client.user.lastName}`.trim(),
+          cmuAccount: updatedCase.client.user.cmuAccount,
+          phoneNum: updatedCase.client.user.phoneNum
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error confirming waiting case:', error);
+
+    const msg = (error as Error).message;
+    if (msg === 'CASE_NOT_FOUND') {
+      return res.status(404).json({
+        success: false,
+        message: 'Case not found'
+      });
+    }
+
+    if (msg === 'CASE_NOT_WAITING') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only waiting_confirmation cases can be confirmed'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
     });
   }
 };
@@ -656,7 +840,6 @@ export const promoteUser = async (req: AuthRequest, res: Response) => {
     const counselorUserId = req.user?.userId;
     const { userId, counselorNumber } = req.body;
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId },
       include: { counselorProfile: true }
@@ -676,7 +859,6 @@ export const promoteUser = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if user exists
     const user = await prisma.user.findUnique({
       where: { userId: parseInt(userId) },
       include: { counselorProfile: true }
@@ -689,7 +871,6 @@ export const promoteUser = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if already a counselor
     if (user.counselorProfile) {
       return res.status(400).json({
         success: false,
@@ -697,7 +878,6 @@ export const promoteUser = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Perform promotion
     const result = await prisma.$transaction(async (tx) => {
       const updatedUser = await tx.user.update({
         where: { userId: parseInt(userId) },
@@ -726,7 +906,6 @@ export const promoteUser = async (req: AuthRequest, res: Response) => {
         promotedAt: new Date().toISOString()
       }
     });
-
   } catch (error) {
     console.error('Error promoting user:', error);
     res.status(500).json({
@@ -745,7 +924,6 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
     const counselorUserId = req.user?.userId;
     const { role } = req.query;
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId }
     });
@@ -757,13 +935,11 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Build filter
     const whereConditions: any = {};
     if (role && typeof role === 'string') {
       whereConditions.roleName = role;
     }
 
-    // Fetch users
     const users = await prisma.user.findMany({
       where: whereConditions,
       include: {
@@ -772,7 +948,14 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
             cases: {
               select: {
                 caseId: true,
-                status: true
+                status: true,
+                priority: true,
+                createdAt: true,
+                confirmedAt: true,
+                queueToken: true
+              },
+              orderBy: {
+                createdAt: 'desc'
               }
             }
           }
@@ -793,11 +976,13 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    // Format response
-    const formattedUsers = users.map(user => {
+    const formattedUsers = users.map((user) => {
+      const waitingCase =
+        user.clientProfile?.cases.find((c) => c.status === 'waiting_confirmation') ?? null;
+
       const baseData = {
         userId: user.userId,
-        name: `${user.firstName} ${user.lastName}`,
+        name: `${user.firstName} ${user.lastName}`.trim(),
         firstName: user.firstName,
         lastName: user.lastName,
         cmuAccount: user.cmuAccount,
@@ -806,7 +991,13 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
         roleName: user.roleName,
         createdAt: user.createdAt,
         isConsentAccepted: user.isConsentAccepted,
-        consentAcceptedAt: user.consentAcceptedAt
+        consentAcceptedAt: user.consentAcceptedAt,
+        status:
+          user.roleName === 'client' && waitingCase
+            ? 'pending'
+            : 'active',
+        pendingCaseId: waitingCase?.caseId ?? null,
+        pendingPriority: waitingCase?.priority ?? null
       };
 
       if (user.roleName === 'client' && user.clientProfile) {
@@ -817,10 +1008,10 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
           department: user.clientProfile.department,
           caseStats: {
             total: user.clientProfile.cases.length,
-            active: user.clientProfile.cases.filter(c =>
+            active: user.clientProfile.cases.filter((c) =>
               ['waiting_confirmation', 'confirmed', 'in_progress'].includes(c.status)
             ).length,
-            completed: user.clientProfile.cases.filter(c => c.status === 'completed').length
+            completed: user.clientProfile.cases.filter((c) => c.status === 'completed').length
           }
         };
       }
@@ -831,9 +1022,9 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
           counselorNumber: user.counselorProfile.counselorNumber,
           sessionStats: {
             total: user.counselorProfile.sessions.length,
-            available: user.counselorProfile.sessions.filter(s => s.status === 'available').length,
-            booked: user.counselorProfile.sessions.filter(s => s.status === 'booked').length,
-            completed: user.counselorProfile.sessions.filter(s => s.status === 'completed').length
+            available: user.counselorProfile.sessions.filter((s) => s.status === 'available').length,
+            booked: user.counselorProfile.sessions.filter((s) => s.status === 'booked').length,
+            completed: user.counselorProfile.sessions.filter((s) => s.status === 'completed').length
           }
         };
       }
@@ -841,14 +1032,14 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
       return baseData;
     });
 
-    // Summary stats
     const summary = {
       total: users.length,
       byRole: {
-        client: users.filter(u => u.roleName === 'client').length,
-        counselor: users.filter(u => u.roleName === 'counselor').length
+        client: users.filter((u) => u.roleName === 'client').length,
+        counselor: users.filter((u) => u.roleName === 'counselor').length
       },
-      consentAccepted: users.filter(u => u.isConsentAccepted).length
+      consentAccepted: users.filter((u) => u.isConsentAccepted).length,
+      pending: formattedUsers.filter((u: any) => u.status === 'pending').length
     };
 
     res.status(200).json({
@@ -859,7 +1050,6 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
         users: formattedUsers
       }
     });
-
   } catch (error) {
     console.error('Error fetching users:', error);
     res.status(500).json({
@@ -879,7 +1069,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
     const { userId } = req.params;
     const { roleName, counselorNumber } = req.body;
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId }
     });
@@ -891,7 +1080,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Validate role
     if (!roleName || !['client', 'counselor'].includes(roleName)) {
       return res.status(400).json({
         success: false,
@@ -899,7 +1087,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if user exists
     const user = await prisma.user.findUnique({
       where: { userId: parseInt(userId) },
       include: {
@@ -915,7 +1102,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Prevent self-modification
     if (user.userId === counselorUserId) {
       return res.status(400).json({
         success: false,
@@ -923,7 +1109,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if already has role
     if (user.roleName === roleName) {
       return res.status(400).json({
         success: false,
@@ -931,7 +1116,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Perform role update
     const result = await prisma.$transaction(async (tx) => {
       const previousRole = user.roleName;
 
@@ -940,7 +1124,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
         data: { roleName }
       });
 
-      // Handle profile changes
       if (roleName === 'counselor' && !user.counselorProfile) {
         await tx.counselor.create({
           data: {
@@ -970,7 +1153,7 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
         await tx.client.create({
           data: {
             userId: parseInt(userId),
-            clientId: clientId
+            clientId
           }
         });
       } else if (roleName === 'counselor' && user.clientProfile) {
@@ -981,7 +1164,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
           }
         });
 
-        // ถ้ามี active cases ให้ close ก่อนแล้วค่อยเปลี่ยน role
         if (activeCases > 0) {
           await tx.case.updateMany({
             where: {
@@ -1010,7 +1192,6 @@ export const updateUserRole = async (req: AuthRequest, res: Response) => {
         newRole: result.updatedUser.roleName
       }
     });
-
   } catch (error) {
     console.error('Error updating user role:', error);
 
@@ -1036,7 +1217,6 @@ export const getAllCounselors = async (req: AuthRequest, res: Response) => {
   try {
     const counselorUserId = req.user?.userId;
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId }
     });
@@ -1048,7 +1228,6 @@ export const getAllCounselors = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Fetch all counselors
     const counselors = await prisma.counselor.findMany({
       include: {
         user: {
@@ -1077,8 +1256,7 @@ export const getAllCounselors = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    // Format response
-    const formattedCounselors = counselors.map(counselor => ({
+    const formattedCounselors = counselors.map((counselor) => ({
       userId: counselor.user.userId,
       name: `${counselor.user.firstName} ${counselor.user.lastName}`,
       firstName: counselor.user.firstName,
@@ -1090,16 +1268,16 @@ export const getAllCounselors = async (req: AuthRequest, res: Response) => {
       joinedAt: counselor.user.createdAt,
       sessionStats: {
         total: counselor.sessions.length,
-        available: counselor.sessions.filter(s => s.status === 'available').length,
-        booked: counselor.sessions.filter(s => s.status === 'booked').length,
-        completed: counselor.sessions.filter(s => s.status === 'completed').length
+        available: counselor.sessions.filter((s) => s.status === 'available').length,
+        booked: counselor.sessions.filter((s) => s.status === 'booked').length,
+        completed: counselor.sessions.filter((s) => s.status === 'completed').length
       },
       caseStats: {
         total: counselor.cases.length,
-        active: counselor.cases.filter(c =>
+        active: counselor.cases.filter((c) =>
           ['waiting_confirmation', 'confirmed', 'in_progress'].includes(c.status)
         ).length,
-        completed: counselor.cases.filter(c => c.status === 'completed').length
+        completed: counselor.cases.filter((c) => c.status === 'completed').length
       }
     }));
 
@@ -1111,7 +1289,6 @@ export const getAllCounselors = async (req: AuthRequest, res: Response) => {
         counselors: formattedCounselors
       }
     });
-
   } catch (error) {
     console.error('Error fetching counselors:', error);
     res.status(500).json({
@@ -1132,7 +1309,6 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
     const counselorUserId = req.user?.userId;
     const { startDate, endDate } = req.query;
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId }
     });
@@ -1144,7 +1320,6 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Validate dates
     if (!startDate || !endDate) {
       return res.status(400).json({
         success: false,
@@ -1165,7 +1340,6 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
 
     const dateFilter = { gte: start, lte: end };
 
-    // Fetch data
     const [cases, sessions, users] = await Promise.all([
       prisma.case.findMany({
         where: { createdAt: dateFilter },
@@ -1192,74 +1366,79 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
         }
       })
     ]);
-    // Average wait days: difference between confirmedAt and createdAt for confirmed/completed cases
-    const casesWithWait = cases.filter(c => c.confirmedAt && c.createdAt);
-    const averageWaitDays = casesWithWait.length > 0
-      ? Math.round(
-        casesWithWait.reduce((sum, c) => {
-          const diff = new Date(c.confirmedAt!).getTime() - new Date(c.createdAt).getTime();
-          return sum + diff / (1000 * 60 * 60 * 24);
-        }, 0) / casesWithWait.length
-      )
-      : 0;
+    const appointmentSessions = sessions.filter((s) =>['booked', 'completed'].includes(s.status));
+
+    const casesWithWait = cases.filter((c) => c.confirmedAt && c.createdAt);
+    const averageWaitDays =
+      casesWithWait.length > 0
+        ? Math.round(
+            casesWithWait.reduce((sum, c) => {
+              const diff =
+                new Date(c.confirmedAt!).getTime() - new Date(c.createdAt).getTime();
+              return sum + diff / (1000 * 60 * 60 * 24);
+            }, 0) / casesWithWait.length
+          )
+        : 0;
 
     const departmentCounts: Record<string, number> = {};
-    cases.forEach(c => {
+    cases.forEach((c) => {
       const dept = c.client.department || 'อื่นๆ';
       departmentCounts[dept] = (departmentCounts[dept] || 0) + 1;
     });
+
     const byDepartment = Object.entries(departmentCounts)
       .sort(([, a], [, b]) => b - a)
       .map(([department, count]) => ({ department, count }));
 
     const monthlyMap: Record<string, number> = {};
-    sessions.forEach(s => {
-      const d = new Date(s.createdAt);
-      const key = d.toLocaleDateString('th-TH', { month: 'short' });
+      appointmentSessions.forEach((s) => {
+    const d = new Date(s.timeStart ?? s.createdAt);
+    const key = d.toLocaleDateString('th-TH', { month: 'short' });
       monthlyMap[key] = (monthlyMap[key] || 0) + 1;
     });
-    const monthlySessions = Object.entries(monthlyMap)
-      .map(([month, count]) => ({ month, count }));
+    const monthlySessions = Object.entries(monthlyMap).map(([month, count]) => ({
+      month,
+      count
+      }));
 
-    // Calculate stats
     const caseStats = {
       total: cases.length,
       byStatus: {
-        waiting_confirmation: cases.filter(c => c.status === 'waiting_confirmation').length,
-        confirmed: cases.filter(c => c.status === 'confirmed').length,
-        in_progress: cases.filter(c => c.status === 'in_progress').length,
-        completed: cases.filter(c => c.status === 'completed').length,
-        cancelled: cases.filter(c => c.status === 'cancelled').length
+        waiting_confirmation: cases.filter((c) => c.status === 'waiting_confirmation').length,
+        confirmed: cases.filter((c) => c.status === 'confirmed').length,
+        in_progress: cases.filter((c) => c.status === 'in_progress').length,
+        completed: cases.filter((c) => c.status === 'completed').length,
+        cancelled: cases.filter((c) => c.status === 'cancelled').length
       },
       byPriority: {
-        high: cases.filter(c => c.priority === 'high').length,
-        medium: cases.filter(c => c.priority === 'medium').length,
-        low: cases.filter(c => c.priority === 'low').length
+        high: cases.filter((c) => c.priority === 'high').length,
+        medium: cases.filter((c) => c.priority === 'medium').length,
+        low: cases.filter((c) => c.priority === 'low').length
       },
-      averageSessionsPerCase: cases.length > 0
-        ? cases.reduce((sum, c) => sum + c.sessions.length, 0) / cases.length
-        : 0
+      averageSessionsPerCase:
+        cases.length > 0
+          ? cases.reduce((sum, c) => sum + c.sessions.length, 0) / cases.length
+          : 0
     };
 
     const sessionStats = {
-      total: sessions.length,
+      total: appointmentSessions.length, // only booked + completed
       byStatus: {
-        available: sessions.filter(s => s.status === 'available').length,
-        booked: sessions.filter(s => s.status === 'booked').length,
-        completed: sessions.filter(s => s.status === 'completed').length,
-        cancelled: sessions.filter(s => s.status === 'cancelled').length
+        available: sessions.filter((s) => s.status === 'available').length,
+        booked: appointmentSessions.filter((s) => s.status === 'booked').length,
+        completed: appointmentSessions.filter((s) => s.status === 'completed').length,
+        cancelled: sessions.filter((s) => s.status === 'cancelled').length
       },
-      withNotes: sessions.filter(s => s.counselorNote).length,
-      withMoodScale: sessions.filter(s => s.moodScale !== null).length
+      withNotes: appointmentSessions.filter((s) => s.counselorNote).length,
+      withMoodScale: appointmentSessions.filter((s) => s.moodScale !== null).length
     };
 
-    // Problem tags
     const problemTagCounts: Record<string, number> = {};
-    sessions.forEach(session => {
-      session.problemTags.forEach(tag => {
-        problemTagCounts[tag.label] = (problemTagCounts[tag.label] || 0) + 1;
+      appointmentSessions.forEach((session) => {
+        session.problemTags.forEach((tag) => {
+          problemTagCounts[tag.label] = (problemTagCounts[tag.label] || 0) + 1;
+        });
       });
-    });
 
     const topProblemTags = Object.entries(problemTagCounts)
       .sort(([, a], [, b]) => b - a)
@@ -1269,13 +1448,12 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
     const userStats = {
       newUsers: users.length,
       byRole: {
-        client: users.filter(u => u.roleName === 'client').length,
-        counselor: users.filter(u => u.roleName === 'counselor').length
+        client: users.filter((u) => u.roleName === 'client').length,
+        counselor: users.filter((u) => u.roleName === 'counselor').length
       },
-      consentAccepted: users.filter(u => u.isConsentAccepted).length
+      consentAccepted: users.filter((u) => u.isConsentAccepted).length
     };
 
-    // Counselor performance
     const counselorPerformance = await prisma.counselor.findMany({
       include: {
         user: {
@@ -1293,14 +1471,16 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    const counselorStats = counselorPerformance.map(c => ({
-      counselorId: c.userId,
-      name: `${c.user.firstName} ${c.user.lastName}`,
-      counselorNumber: c.counselorNumber,
-      casesHandled: c.cases.length,
-      sessionsCreated: c.sessions.length,
-      sessionsCompleted: c.sessions.filter(s => s.status === 'completed').length
-    })).sort((a, b) => b.casesHandled - a.casesHandled);
+    const counselorStats = counselorPerformance
+      .map((c) => ({
+        counselorId: c.userId,
+        name: `${c.user.firstName} ${c.user.lastName}`,
+        counselorNumber: c.counselorNumber,
+        casesHandled: c.cases.length,
+        sessionsCreated: c.sessions.length,
+        sessionsCompleted: c.sessions.filter((s) => s.status === 'completed').length
+      }))
+      .sort((a, b) => b.casesHandled - a.casesHandled);
 
     res.status(200).json({
       success: true,
@@ -1317,14 +1497,16 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
           newClients: userStats.byRole.client,
           averageWaitDays
         },
-        topTags: topProblemTags.map(t => ({ tag: t.label, count: t.count })),
+        topTags: topProblemTags.map((t) => ({ tag: t.label, count: t.count })),
         byDepartment,
-        counselorWorkload: counselorStats.map(c => ({ name: c.name, sessions: c.sessionsCompleted })),
+        counselorWorkload: counselorStats.map((c) => ({
+          name: c.name,
+          sessions: c.sessionsCompleted
+        })),
         monthlySessions,
         generatedAt: new Date().toISOString()
       }
     });
-
   } catch (error) {
     console.error('Error generating report:', error);
     res.status(500).json({
@@ -1336,17 +1518,12 @@ export const getFullReport = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * Get list of registration tokens from RegistrationCode table.
- * Returns records shaped to match the frontend allToken interface:
- *   { id, token, isUsed, usedAt?, createdAt }
- * Sorting is handled client-side; the backend returns all records ordered
- * by code ascending as a stable default.
+ * Get list of registration tokens
  */
 export const getTokenList = async (req: AuthRequest, res: Response) => {
   try {
     const counselorUserId = req.user?.userId;
 
-    // Validate counselor role
     const counselor = await prisma.user.findUnique({
       where: { userId: counselorUserId }
     });
@@ -1358,18 +1535,15 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Fetch all registration codes
     const registrationCodes = await prisma.registrationCode.findMany({
       orderBy: { code: 'asc' }
     });
 
-    // Map RegistrationCode fields → frontend allToken shape
-    const tokens = registrationCodes.map(rc => ({
+    const tokens = registrationCodes.map((rc) => ({
       id: rc.id,
       token: rc.code,
       isUsed: rc.isUsed,
-      usedAt: rc.usedAt ?? undefined,
-      //createdAt: rc.createdAt ?? new Date()
+      usedAt: rc.usedAt ?? undefined
     }));
 
     res.status(200).json({
@@ -1380,7 +1554,6 @@ export const getTokenList = async (req: AuthRequest, res: Response) => {
         tokens
       }
     });
-
   } catch (error) {
     console.error('Error fetching tokens:', error);
     res.status(500).json({
@@ -1411,7 +1584,9 @@ export const createToken = async (req: AuthRequest, res: Response) => {
 
     const TOKEN_REGEX = /^TK-[A-Z0-9]{6}$/;
     if (!TOKEN_REGEX.test(code.trim())) {
-      return res.status(400).json({ success: false, message: 'Invalid token format. Expected TK-XXXXXX' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid token format. Expected TK-XXXXXX' });
     }
 
     const existing = await prisma.registrationCode.findUnique({
@@ -1426,7 +1601,7 @@ export const createToken = async (req: AuthRequest, res: Response) => {
       data: {
         code: code.trim(),
         isUsed: false,
-        createdBy: counselor.cmuAccount ?? String(counselorUserId),
+        createdBy: counselor.cmuAccount ?? String(counselorUserId)
       }
     });
 
@@ -1435,14 +1610,57 @@ export const createToken = async (req: AuthRequest, res: Response) => {
       message: 'Token created successfully',
       data: { id: newCode.id, token: newCode.code, isUsed: newCode.isUsed }
     });
-
   } catch (error) {
     console.error('Error creating token:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 };
+
+export const deleteToken = async (req: AuthRequest, res: Response) => {
+  try {
+    const counselorUserId = req.user?.userId;
+    const id = parseInt(req.params.id);
+
+    const counselor = await prisma.user.findUnique({
+      where: { userId: counselorUserId }
+    });
+
+    if (!counselor || counselor.roleName !== 'counselor') {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    if (isNaN(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid token id' });
+    }
+
+    const token = await prisma.registrationCode.findUnique({
+      where: { id }
+    });
+
+    if (!token) {
+      return res.status(404).json({ success: false, message: 'Token not found' });
+    }
+
+    if (token.isUsed) {
+      return res.status(400).json({ success: false, message: 'Cannot delete a used token' });
+    }
+
+    await prisma.registrationCode.delete({
+      where: { id }
+    });
+
+    return res.json({
+      success: true,
+      message: 'Token deleted successfully'
+    });
+  } catch (error) {
+    console.error('deleteToken error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete token' });
+  }
+};
+
 // ─────────────────────────────────────────────
-// DELETE USER (hard delete หรือ soft suspend)
+// DELETE USER
 // DELETE /api/counselor/users/:userId
 // ─────────────────────────────────────────────
 export const deleteUser = async (req: AuthRequest, res: Response) => {
@@ -1460,21 +1678,26 @@ export const deleteUser = async (req: AuthRequest, res: Response) => {
 
     const user = await prisma.user.findUnique({
       where: { userId: targetId },
-      include: { clientProfile: { include: { cases: { include: { sessions: true } } } }, counselorProfile: true }
+      include: {
+        clientProfile: {
+          include: {
+            cases: { include: { sessions: true } }
+          }
+        },
+        counselorProfile: true
+      }
     });
 
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     await prisma.$transaction(async (tx) => {
-      // ถ้าเป็น client ต้อง cleanup cases และ sessions ก่อน
       if (user.clientProfile) {
         for (const c of user.clientProfile.cases) {
-          // cancel sessions ที่ booked อยู่
           await tx.session.updateMany({
             where: { caseId: c.caseId, status: { in: ['available', 'booked'] } },
             data: { status: 'cancelled', caseId: null, sessionName: null, sessionToken: null }
           });
-          // ลบ case notes (sessionHistory ของ sessions ใน case นี้)
+
           const sessionIds = c.sessions.map((s: any) => s.sessionId);
           if (sessionIds.length > 0) {
             await tx.sessionHistory.deleteMany({ where: { sessionId: { in: sessionIds } } });
@@ -1483,11 +1706,12 @@ export const deleteUser = async (req: AuthRequest, res: Response) => {
         await tx.case.deleteMany({ where: { clientId: user.clientProfile.clientId } });
         await tx.client.delete({ where: { userId: targetId } });
       }
-      // ถ้าเป็น counselor ต้อง cleanup sessions ที่ available ก่อน
+
       if (user.counselorProfile) {
         await tx.session.deleteMany({ where: { counselorId: targetId, status: 'available' } });
         await tx.counselor.delete({ where: { userId: targetId } });
       }
+
       await tx.user.delete({ where: { userId: targetId } });
     });
 
@@ -1499,97 +1723,228 @@ export const deleteUser = async (req: AuthRequest, res: Response) => {
 };
 
 // ─────────────────────────────────────────────
-// ADD USER BY CMU ACCOUNT (counselor shortcut)
+// ADD USER BY CMU ACCOUNT
 // POST /api/counselor/users
 // Body: { cmuAccount, roleName, counselorNumber? }
 // ─────────────────────────────────────────────
 export const addUserByCmuAccount = async (req: AuthRequest, res: Response) => {
   try {
-    const { cmuAccount, roleName, counselorNumber } = req.body as {
+    const {
+      cmuAccount,
+      roleName,
+      counselorNumber,
+      firstName,
+      lastName,
+      department,
+      priority
+    } = req.body as {
       cmuAccount: string;
       roleName: 'client' | 'counselor';
       counselorNumber?: string;
+      firstName?: string;
+      lastName?: string;
+      department?: string;
+      priority?: 'low' | 'medium' | 'high';
     };
 
     if (!cmuAccount?.trim()) {
       return res.status(400).json({ success: false, message: 'cmuAccount is required' });
     }
+
     if (!['client', 'counselor'].includes(roleName)) {
-      return res.status(400).json({ success: false, message: 'roleName must be client or counselor' });
+      return res.status(400).json({
+        success: false,
+        message: 'roleName must be client or counselor'
+      });
+    }
+
+    if (!firstName?.trim()) {
+      return res.status(400).json({ success: false, message: 'firstName is required' });
+    }
+
+    if (lastName === undefined || lastName === null) {
+      return res.status(400).json({ success: false, message: 'lastName is required' });
+    }
+
+    if (roleName === 'client' && !department?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'department is required for client'
+      });
     }
 
     const email = cmuAccount.trim().toLowerCase();
+    const localPart = email.split('@')[0];
+    const normalizedPriority =
+      priority && ['low', 'medium', 'high'].includes(priority) ? priority : 'medium';
 
-    // ถ้ามีอยู่แล้ว ให้ return user นั้นเลย (idempotent)
-    let user = await prisma.user.findUnique({
-      where: { cmuAccount: email },
-      include: { clientProfile: true, counselorProfile: true }
-    });
-
-    if (user) {
-      // อัปเดต role ถ้าต่างกัน
-      if (user.roleName !== roleName) {
-        await prisma.user.update({ where: { userId: user.userId }, data: { roleName } });
-      }
-      // สร้าง profile ถ้ายังไม่มี
-      if (roleName === 'client' && !user.clientProfile) {
-        await prisma.client.create({
-          data: { userId: user.userId, clientId: email.split('@')[0] }
-        });
-        // set consent on User table (ไม่ใช่ Client)
-        await prisma.user.update({
-          where: { userId: user.userId },
-          data: { isConsentAccepted: true, consentAcceptedAt: new Date() }
-        });
-      }
-      if (roleName === 'counselor' && !user.counselorProfile) {
-        await prisma.counselor.create({ data: { userId: user.userId, counselorNumber: counselorNumber || null } });
-      }
-      const updated = await prisma.user.findUnique({
-        where: { userId: user.userId },
-        include: { clientProfile: true, counselorProfile: true }
+    const txResult = await prisma.$transaction(async (tx) => {
+      let user = await tx.user.findUnique({
+        where: { cmuAccount: email },
+        include: {
+          clientProfile: true,
+          counselorProfile: true
+        }
       });
-      return res.json({ success: true, message: 'User already exists, updated', data: updated });
-    }
 
-    // สร้าง user ใหม่ — ดึงชื่อจาก email prefix เป็น default
-    const namePart = email.split('@')[0];
-    user = await prisma.$transaction(async (tx) => {
-      const newUser = await tx.user.create({
+      if (user) {
+        const updatedUser = await tx.user.update({
+          where: { userId: user.userId },
+          data: {
+            firstName: firstName.trim(),
+            lastName: String(lastName).trim(),
+            cmuAccount: email,
+            roleName,
+            ...(roleName === 'client'
+              ? {
+                  isConsentAccepted: true,
+                  consentAcceptedAt: user.consentAcceptedAt ?? new Date()
+                }
+              : {})
+          },
+          include: {
+            clientProfile: true,
+            counselorProfile: true
+          }
+        });
+
+        if (roleName === 'client') {
+          const clientProfile = updatedUser.clientProfile
+            ? await tx.client.update({
+                where: { userId: updatedUser.userId },
+                data: {
+                  department: department?.trim() || null
+                }
+              })
+            : await tx.client.create({
+                data: {
+                  userId: updatedUser.userId,
+                  clientId: localPart,
+                  department: department?.trim() || null
+                }
+              });
+
+          const latestActiveCase = await tx.case.findFirst({
+            where: {
+              clientId: clientProfile.clientId,
+              status: {
+                in: ['waiting_confirmation', 'confirmed', 'in_progress']
+              }
+            },
+            orderBy: {
+              createdAt: 'desc'
+            }
+          });
+
+          if (latestActiveCase) {
+            if (latestActiveCase.status === 'waiting_confirmation') {
+              await tx.case.update({
+                where: { caseId: latestActiveCase.caseId },
+                data: {
+                  status: 'confirmed',
+                  priority: normalizedPriority,
+                  confirmedAt: new Date(),
+                  queueToken:
+                    latestActiveCase.queueToken || (await generateCaseQueueToken(tx as any)),
+                  waitingEnteredAt: latestActiveCase.waitingEnteredAt ?? latestActiveCase.createdAt
+                }
+              });
+            }
+          } else {
+            await tx.case.create({
+              data: {
+                clientId: clientProfile.clientId,
+                status: 'confirmed',
+                priority: normalizedPriority,
+                queueToken: await generateCaseQueueToken(tx as any),
+                confirmedAt: new Date()
+              }
+            });
+          }
+        }
+
+        if (roleName === 'counselor') {
+          if (updatedUser.counselorProfile) {
+            await tx.counselor.update({
+              where: { userId: updatedUser.userId },
+              data: {
+                counselorNumber: counselorNumber || updatedUser.counselorProfile.counselorNumber || null
+              }
+            });
+          } else {
+            await tx.counselor.create({
+              data: {
+                userId: updatedUser.userId,
+                counselorNumber: counselorNumber || null
+              }
+            });
+          }
+        }
+
+        return { userId: updatedUser.userId, existed: true };
+      }
+
+      const createdUser = await tx.user.create({
         data: {
           cmuAccount: email,
-          firstName: namePart,
-          lastName: '',
+          firstName: firstName.trim(),
+          lastName: String(lastName).trim(),
           roleName,
-          isConsentAccepted: roleName === 'client', // client ที่ counselor เพิ่มถือว่า bypass consent
-        },
-        include: { clientProfile: true, counselorProfile: true }
+          isConsentAccepted: roleName === 'client',
+          consentAcceptedAt: roleName === 'client' ? new Date() : null
+        }
       });
 
       if (roleName === 'client') {
         await tx.client.create({
-          data: { userId: newUser.userId, clientId: namePart }
+          data: {
+            userId: createdUser.userId,
+            clientId: localPart,
+            department: department?.trim() || null
+          }
         });
-        // สร้าง confirmed case ทันที (bypass waiting)
+
         await tx.case.create({
-          data: { clientId: namePart, status: 'confirmed' }
+          data: {
+            clientId: localPart,
+            status: 'confirmed',
+            priority: normalizedPriority,
+            queueToken: await generateCaseQueueToken(tx as any),
+            confirmedAt: new Date()
+          }
         });
       } else {
         await tx.counselor.create({
-          data: { userId: newUser.userId, counselorNumber: counselorNumber || null }
+          data: {
+            userId: createdUser.userId,
+            counselorNumber: counselorNumber || null
+          }
         });
       }
-      return newUser;
+
+      return { userId: createdUser.userId, existed: false };
     });
 
     const result = await prisma.user.findUnique({
-      where: { userId: user.userId },
-      include: { clientProfile: true, counselorProfile: true }
+      where: { userId: txResult.userId },
+      include: {
+        clientProfile: true,
+        counselorProfile: true
+      }
     });
 
-    return res.status(201).json({ success: true, message: 'User created successfully', data: result });
+    return res.status(txResult.existed ? 200 : 201).json({
+      success: true,
+      message: txResult.existed
+        ? 'User already exists, updated successfully'
+        : 'User created successfully',
+      data: result
+    });
   } catch (error) {
     console.error('addUserByCmuAccount error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to add user' });
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add user'
+    });
   }
 };
