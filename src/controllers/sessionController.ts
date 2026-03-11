@@ -88,7 +88,10 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
     }
 
     const booked = await prisma.sessionHistory.findMany({
-      where: { editedBy: userId, action: "CLIENT_BOOKED" },
+      where: {
+        editedBy: userId,
+        action: "CLIENT_BOOKED",
+      },
       orderBy: { timestamp: "desc" },
       include: {
         session: {
@@ -117,69 +120,89 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
                 },
               },
             },
-            case: { select: { clientId: true } },
+            case: {
+              select: {
+                clientId: true,
+              },
+            },
           },
         },
       },
     });
 
     const validBooked = booked.filter((h) => !!h.session);
-    const sessionIds = validBooked.map((h) => h.sessionId);
 
-    if (sessionIds.length === 0) {
+    if (validBooked.length === 0) {
       return res.json({ appointments: [] });
     }
 
-    const cancelled = await prisma.sessionHistory.findMany({
+    const sessionIds = [...new Set(validBooked.map((h) => h.sessionId))];
+
+    const allCancels = await prisma.sessionHistory.findMany({
       where: {
         sessionId: { in: sessionIds },
         action: { in: ["CLIENT_CANCELLED", "PORTAL_CANCELLED_BOOKING"] },
       },
       orderBy: { timestamp: "desc" },
-      select: { sessionId: true, details: true, timestamp: true },
+      select: {
+        sessionId: true,
+        details: true,
+        timestamp: true,
+      },
     });
 
-    const cancelledSet = new Set<number>();
-    const cancelledMap = new Map<number, any>();
-
-    for (const c of cancelled) {
-      cancelledSet.add(c.sessionId);
-      if (!cancelledMap.has(c.sessionId)) {
-        cancelledMap.set(c.sessionId, safeJsonParse(c.details) ?? {});
-      }
+    const cancelMap = new Map<number, Array<{ timestamp: Date; details: string | null }>>();
+    for (const c of allCancels) {
+      if (!cancelMap.has(c.sessionId)) cancelMap.set(c.sessionId, []);
+      cancelMap.get(c.sessionId)!.push({
+        timestamp: c.timestamp,
+        details: c.details,
+      });
     }
 
     const appointments = validBooked.map((h) => {
       const s = h.session!;
       const bookedDetails = safeJsonParse(h.details) ?? {};
-      const cancelledDetails = cancelledMap.get(s.sessionId) ?? {};
-      const timeStart = s.timeStart ? s.timeStart.toISOString() : null;
+      const cancelsForSession = cancelMap.get(s.sessionId) ?? [];
+
+      const latestCancelAfterThisBooking = cancelsForSession.find(
+        (c) => new Date(c.timestamp).getTime() > new Date(h.timestamp).getTime()
+      );
+
+      const cancelledDetails = latestCancelAfterThisBooking
+        ? safeJsonParse(latestCancelAfterThisBooking.details) ?? {}
+        : {};
 
       const normalizedStatus = (s.status || "").toLowerCase();
 
-      const isCancelled =
-        normalizedStatus === "cancelled" || cancelledSet.has(s.sessionId);
+      const isCurrentlyBookedByClient =
+        normalizedStatus === "booked" &&
+        !!s.caseId &&
+        s.case?.clientId === clientId;
 
-      const looksCompleted =
+      const isCompleted =
         normalizedStatus === "completed" ||
         !!s.counselorNote ||
         !!s.counselorKeyword ||
         !!s.counselorFollowup ||
         s.moodScale !== null;
 
-      const isUpcoming =
-        normalizedStatus === "booked" &&
-        !!s.caseId &&
-        s.case?.clientId === clientId;
+      const isCancelled =
+        !isCurrentlyBookedByClient &&
+        !isCompleted &&
+        (
+          normalizedStatus === "cancelled" ||
+          !!latestCancelAfterThisBooking
+        );
 
       let status: "upcoming" | "completed" | "cancelled" = "completed";
 
-      if (isCancelled) {
-        status = "cancelled";
-      } else if (looksCompleted) {
-        status = "completed";
-      } else if (isUpcoming) {
+      if (isCurrentlyBookedByClient) {
         status = "upcoming";
+      } else if (isCompleted) {
+        status = "completed";
+      } else if (isCancelled) {
+        status = "cancelled";
       }
 
       const counselorName =
@@ -194,7 +217,7 @@ export async function getClientSessionHistory(req: AuthRequest, res: Response) {
       return {
         id: String(s.sessionId),
         sessionId: s.sessionId,
-        timeStart,
+        timeStart: s.timeStart ? s.timeStart.toISOString() : null,
         counselor: counselorName ?? roomName,
         counselorName,
         roomName,
