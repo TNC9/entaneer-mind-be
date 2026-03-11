@@ -1672,8 +1672,20 @@ export const deleteUser = async (req: AuthRequest, res: Response) => {
     if (!counselorUserId || isNaN(targetId)) {
       return res.status(400).json({ success: false, message: 'Invalid userId' });
     }
+
     if (targetId === counselorUserId) {
       return res.status(400).json({ success: false, message: 'Cannot delete yourself' });
+    }
+
+    const requester = await prisma.user.findUnique({
+      where: { userId: counselorUserId }
+    });
+
+    if (!requester || requester.roleName !== 'counselor') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only counselors can delete users.'
+      });
     }
 
     const user = await prisma.user.findUnique({
@@ -1681,44 +1693,139 @@ export const deleteUser = async (req: AuthRequest, res: Response) => {
       include: {
         clientProfile: {
           include: {
-            cases: { include: { sessions: true } }
+            cases: {
+              include: {
+                sessions: {
+                  select: {
+                    sessionId: true,
+                    status: true
+                  }
+                }
+              }
+            }
           }
         },
-        counselorProfile: true
-      }
-    });
-
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    await prisma.$transaction(async (tx) => {
-      if (user.clientProfile) {
-        for (const c of user.clientProfile.cases) {
-          await tx.session.updateMany({
-            where: { caseId: c.caseId, status: { in: ['available', 'booked'] } },
-            data: { status: 'cancelled', caseId: null, sessionName: null, sessionToken: null }
-          });
-
-          const sessionIds = c.sessions.map((s: any) => s.sessionId);
-          if (sessionIds.length > 0) {
-            await tx.sessionHistory.deleteMany({ where: { sessionId: { in: sessionIds } } });
+        counselorProfile: {
+          include: {
+            sessions: {
+              select: {
+                sessionId: true
+              }
+            },
+            rooms: {
+              select: {
+                roomId: true
+              }
+            },
+            cases: {
+              select: {
+                caseId: true
+              }
+            }
           }
         }
-        await tx.case.deleteMany({ where: { clientId: user.clientProfile.clientId } });
-        await tx.client.delete({ where: { userId: targetId } });
       }
-
-      if (user.counselorProfile) {
-        await tx.session.deleteMany({ where: { counselorId: targetId, status: 'available' } });
-        await tx.counselor.delete({ where: { userId: targetId } });
-      }
-
-      await tx.user.delete({ where: { userId: targetId } });
     });
 
-    return res.json({ success: true, message: 'User deleted successfully' });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // delete histories edited by this user first
+      await tx.sessionHistory.deleteMany({
+        where: { editedBy: targetId }
+      });
+
+      // ===== Client cleanup =====
+      if (user.clientProfile) {
+        const caseIds = user.clientProfile.cases.map((c) => c.caseId);
+        const sessionIds = Array.from(
+          new Set(
+            user.clientProfile!.cases.flatMap((c) => c.sessions.map((s) => s.sessionId))
+          )
+        );
+
+        // reset sessions that belonged to the client's cases
+        for (const sessionId of sessionIds) {
+          await tx.session.update({
+            where: { sessionId },
+            data: {
+              status: 'available',
+              caseId: null,
+              sessionName: null,
+              sessionToken: null,
+              counselorKeyword: null,
+              counselorNote: null,
+              counselorFollowup: null,
+              moodScale: null,
+              problemTags: { set: [] }
+            }
+          });
+        }
+
+        if (sessionIds.length > 0) {
+          await tx.sessionHistory.deleteMany({
+            where: { sessionId: { in: sessionIds } }
+          });
+        }
+
+        if (caseIds.length > 0) {
+          await tx.case.deleteMany({
+            where: { caseId: { in: caseIds } }
+          });
+        }
+
+        await tx.client.delete({
+          where: { userId: targetId }
+        });
+      }
+
+      // ===== Counselor cleanup =====
+      if (user.counselorProfile) {
+        const counselorSessionIds = user.counselorProfile.sessions.map((s) => s.sessionId);
+
+        // detach counselor from cases first
+        await tx.case.updateMany({
+          where: { counselorId: targetId },
+          data: { counselorId: null }
+        });
+
+        if (counselorSessionIds.length > 0) {
+          await tx.sessionHistory.deleteMany({
+            where: { sessionId: { in: counselorSessionIds } }
+          });
+
+          await tx.session.deleteMany({
+            where: { sessionId: { in: counselorSessionIds } }
+          });
+        }
+
+        await tx.room.deleteMany({
+          where: { counselorId: targetId }
+        });
+
+        await tx.counselor.delete({
+          where: { userId: targetId }
+        });
+      }
+
+      // finally delete user
+      await tx.user.delete({
+        where: { userId: targetId }
+      });
+    });
+
+    return res.json({
+      success: true,
+      message: 'User deleted successfully'
+    });
   } catch (error) {
     console.error('deleteUser error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to delete user' });
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete user'
+    });
   }
 };
 
